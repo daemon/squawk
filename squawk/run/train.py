@@ -15,7 +15,7 @@ from squawk.model import LASClassifier, LASClassifierConfig
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('dir', type=Path)
-    parser.add_argument('--num-epochs', '-ne', type=int, default=10)
+    parser.add_argument('--num-epochs', '-ne', type=int, default=20)
     parser.add_argument('--batch-size', '-bsz', type=int, default=16)
     parser.add_argument('--weight-decay', '-wd', type=float, default=5e-5)
     args = parser.parse_args()
@@ -66,8 +66,8 @@ def main():
             num_correct += (scores.max(1)[1] == batch.labels).float().sum().item()
             num_total += scores.size(0)
             pbar.set_postfix(dict(acc=f'{num_correct / num_total:.2f}'))
-        if epoch_idx == 4:
-            optimizer = AdamW(params, 1e-3, weight_decay=args.weight_decay)
+        if epoch_idx == 9:
+            optimizer = AdamW(params, 1e-3 / 3, weight_decay=args.weight_decay)
         tqdm.write(f'Accuracy: {num_correct / num_total:.4f}')
 
 

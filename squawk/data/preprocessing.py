@@ -68,9 +68,17 @@ class SpecAugmentTransform(nn.Module):
         return x
 
     def tmask(self, x):
+        for idx in range(x.size(0)):
+            t = random.randrange(0, self.config.T)
+            t0 = random.randrange(0, x.size(2) - t)
+            x[idx, :, t0:t0 + t] = 0
         return x
 
     def fmask(self, x):
+        for idx in range(x.size(0)):
+            f = random.randrange(0, self.config.F)
+            f0 = random.randrange(0, x.size(1) - f)
+            x[idx, f0:f0 + f] = 0
         return x
 
     def forward(self, x):
