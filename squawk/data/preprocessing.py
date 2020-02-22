@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from typing import Sequence
-import math
 import random
 
 from torchaudio.transforms import MelSpectrogram, ComputeDeltas
@@ -44,6 +43,10 @@ def move_cuda(batch: ClassificationBatch):
     batch.audio = batch.audio.cuda()
     batch.label = batch.label.cuda()
     return batch
+
+
+def identity(x):
+    return x
 
 
 @dataclass

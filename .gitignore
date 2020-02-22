@@ -1,5 +1,7 @@
+local_*
 .idea
 logs
+workspaces
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
