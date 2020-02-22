@@ -54,6 +54,14 @@ class ClassificationDataset(tud.Dataset):
     def __len__(self):
         return len(self.audio_data)
 
+    def split(self, proportion):
+        proportion = int(proportion * len(self.audio_data))
+        audio_data1 = self.audio_data[:proportion]
+        audio_data2 = self.audio_data[proportion:]
+        label_data1 = self.label_data[:proportion]
+        label_data2 = self.label_data[proportion:]
+        return ClassificationDataset(audio_data1, label_data1, self.info), ClassificationDataset(audio_data2, label_data2, self.info)
+
     def to(self, device):
         self.audio_data = [x.to(device) for x in self.audio_data]
 
@@ -81,4 +89,5 @@ def load_freesounds(folder: Path):
             audio_data.append(audio)
             label_data.append(label_map[wav_file.name])
         return ClassificationDataset(audio_data, label_data, DatasetInfo('FreeSounds', sr, l2idx))
-    return load_split('train'), load_split('test')
+    train_split, dev_split = load_split('train').split(0.9)
+    return train_split, dev_split, load_split('test')

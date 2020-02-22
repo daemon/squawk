@@ -9,14 +9,14 @@ import torch.nn.functional as F
 @dataclass
 class LASEncoderConfig(object):
     num_spec_channels: int = 3
-    num_latent_channels: int = 32
-    hidden_size: int = 512
+    num_latent_channels: int = 64
+    hidden_size: int = 256
     num_layers: int = 1
 
 
 class FixedAttentionModuleConfig(object):
     num_heads: int = 4
-    hidden_size: int = 512
+    hidden_size: int = 256
 
 
 @dataclass
