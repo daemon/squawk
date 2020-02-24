@@ -39,14 +39,12 @@ def batchify(examples: Sequence[ClassificationExample], max_length: int = None, 
     return batch
 
 
-def move_cuda(batch: ClassificationBatch):
-    batch.audio = batch.audio.cuda()
-    batch.label = batch.label.cuda()
-    return batch
+class IdentityTransform(nn.Module):
+    def __init__(self):
+        super().__init__()
 
-
-def identity(x):
-    return x
+    def forward(self, x):
+        return x
 
 
 @dataclass
@@ -57,7 +55,6 @@ class SpecAugmentConfig(object):
     T: int = 100
     p: float = 1.0
     mT: int = 2
-
 
 class SpecAugmentTransform(nn.Module):
 

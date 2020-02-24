@@ -32,11 +32,10 @@ class ClassificationBatch(object):
     labels: torch.LongTensor
     lengths: torch.LongTensor = None
 
-    def cuda(self):
-        self.audio = self.audio.cuda()
-        self.labels = self.labels.cuda()
-        self.lengths = self.lengths.cuda()
-        return self
+    def to(self, device):
+        self.audio = self.audio.to(device)
+        self.labels = self.labels.to(device)
+        self.lengths = self.lengths.to(device)
 
     def pin_memory(self):
         self.audio = self.audio.pin_memory()
@@ -84,7 +83,7 @@ def load_freesounds(folder: Path):
         data_folder = folder / f'FSDKaggle2018.audio_{name}'
         audio_data = []
         label_data = []
-        for wav_file in ctqdm(list(data_folder.glob('*.wav'))):
+        for wav_file in ctqdm(list(data_folder.glob('*.wav')), desc=f'Preparing {name} dataset'):
             audio, sr = torchaudio.load(wav_file)
             audio_data.append(audio)
             label_data.append(label_map[wav_file.name])
