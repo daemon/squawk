@@ -1,6 +1,5 @@
 from typing import Sequence
 
-from torchaudio.transforms import MelSpectrogram, ComputeDeltas
 import torch
 import torch.nn as nn
 
@@ -65,23 +64,3 @@ class ZmuvTransform(nn.Module):
 
     def forward(self, x):
         return (x - self.mean) / self.std
-
-
-class StandardAudioTransform(nn.Module):
-
-    def __init__(self, sample_rate=44100, n_fft=int(400 / 16000 * 44100)):
-        super().__init__()
-        self.spec_transform = MelSpectrogram(n_mels=80, sample_rate=sample_rate, n_fft=n_fft)
-        self.delta_transform = ComputeDeltas()
-
-    def forward(self, audio: torch.Tensor, mels_only=False, deltas_only=False):
-        with torch.no_grad():
-            log_mels = audio if deltas_only else self.spec_transform(audio).add_(1e-7).log_()
-            if mels_only:
-                return log_mels
-            deltas = self.delta_transform(log_mels)
-            accels = self.delta_transform(deltas)
-            return torch.stack((log_mels, deltas, accels), 1)
-
-    def compute_length(self, length: int):
-        return int((length - self.spec_transform.win_length) / self.spec_transform.hop_length + 1)

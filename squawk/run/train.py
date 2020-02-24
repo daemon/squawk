@@ -19,6 +19,7 @@ from squawk.utils import prettify_dataclass, Workspace, set_seed
 def main():
     def evaluate(data_loader, prefix: str):
         model.eval()
+        spec_transform.eval()
         pbar = tqdm(data_loader, total=len(data_loader), position=1, desc=prefix, leave=True)
         for tracker in trackers:
             tracker.reset()
@@ -47,7 +48,8 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--model', type=str, default='las', choices=['las', 'mn'])
     parser.add_argument('--no-timewarp', '-notw', action='store_false', dest='use_timewarp')
-    parser.add_argument('--use-timeshift', action='store_true')
+    parser.add_argument('--use-timeshift', '-ts', action='store_true')
+    parser.add_argument('--use-vtlp', '-vtlp', action='store_true')
     args = parser.parse_args()
 
     torch.backends.cudnn.deterministic = True
@@ -61,7 +63,7 @@ def main():
     train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=train_collate, num_workers=16, drop_last=True)
     dev_loader = tud.DataLoader(dev_ds, batch_size=10, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=10)
     test_loader = tud.DataLoader(test_ds, batch_size=10, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=10)
-    spec_transform = StandardAudioTransform()
+    spec_transform = StandardAudioTransform(use_vtlp=args.use_vtlp)
     spec_transform.cuda()
     set_seed(args.seed)
 
@@ -94,6 +96,7 @@ def main():
 
     for epoch_idx in trange(args.num_epochs, position=0, leave=True):
         model.train()
+        spec_transform.train()
         pbar = tqdm(train_loader, total=len(train_loader), position=1, desc='Training', leave=True)
         for batch in pbar:
             batch.cuda()

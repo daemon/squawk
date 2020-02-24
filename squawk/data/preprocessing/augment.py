@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from typing import Sequence
+import math
 import random
 
-import math
+from torchaudio.transforms import MelSpectrogram, ComputeDeltas
 import torch
 import torch.nn as nn
 
@@ -29,6 +30,28 @@ class SpecAugmentConfig(object):
     p: float = 1.0
     mT: int = 2
     use_timewarp: bool = True
+
+
+class StandardAudioTransform(nn.Module):
+
+    def __init__(self, sample_rate=44100, n_fft=int(400 / 16000 * 44100), use_vtlp=False):
+        super().__init__()
+        self.spec_transform = MelSpectrogram(n_mels=80, sample_rate=sample_rate, n_fft=n_fft)
+        if use_vtlp:
+            self.spec_transform = apply_vtlp(self.spec_transform)
+        self.delta_transform = ComputeDeltas()
+
+    def forward(self, audio: torch.Tensor, mels_only=False, deltas_only=False):
+        with torch.no_grad():
+            log_mels = audio if deltas_only else self.spec_transform(audio).add_(1e-7).log_()
+            if mels_only:
+                return log_mels
+            deltas = self.delta_transform(log_mels)
+            accels = self.delta_transform(deltas)
+            return torch.stack((log_mels, deltas, accels), 1)
+
+    def compute_length(self, length: int):
+        return int((length - self.spec_transform.win_length) / self.spec_transform.hop_length + 1)
 
 
 class SpecAugmentTransform(nn.Module):
@@ -65,29 +88,12 @@ class SpecAugmentTransform(nn.Module):
         return x
 
 
-def create_fb_matrix(n_freqs, f_min, f_max, n_mels, sample_rate):
-    # type: (int, float, float, int, int) -> Tensor
-    r"""Create a frequency bin conversion matrix.
-
-    Args:
-        n_freqs (int): Number of frequencies to highlight/apply
-        f_min (float): Minimum frequency (Hz)
-        f_max (float): Maximum frequency (Hz)
-        n_mels (int): Number of mel filterbanks
-        sample_rate (int): Sample rate of the audio waveform
-
-    Returns:
-        torch.Tensor: Triangular filter banks (fb matrix) of size (``n_freqs``, ``n_mels``)
-        meaning number of frequencies to highlight/apply to x the number of filterbanks.
-        Each column is a filterbank so that assuming there is a matrix A of
-        size (..., ``n_freqs``), the applied result would be
-        ``A * create_fb_matrix(A.size(-1), ...)``.
-    """
+def create_vtlp_fb_matrix(n_freqs, f_min, f_max, n_mels, sample_rate, alpha, f_hi=4800 / 16000, training=True):
+    # type: (int, float, float, int, int, float, int, bool) -> torch.Tensor
     # freq bins
     # Equivalent filterbank construction by Librosa
+    S = sample_rate
     all_freqs = torch.linspace(0, sample_rate // 2, n_freqs)
-    i_freqs = all_freqs.ge(f_min) & all_freqs.le(f_max)
-    freqs = all_freqs[i_freqs]
 
     # calculate mel freq bins
     # hertz to mel(f) is 2595. * math.log10(1. + (f / 700.))
@@ -96,6 +102,12 @@ def create_fb_matrix(n_freqs, f_min, f_max, n_mels, sample_rate):
     m_pts = torch.linspace(m_min, m_max, n_mels + 2)
     # mel to hertz(mel) is 700. * (10**(mel / 2595.) - 1.)
     f_pts = 700.0 * (10 ** (m_pts / 2595.0) - 1.0)
+    if training:
+        f_hi = int(f_hi * sample_rate)
+        f_pts[f_pts <= f_hi * min(alpha, 1) / alpha] *= alpha
+        f = f_pts[f_pts > f_hi * min(alpha, 1) / alpha]
+        f_pts[f_pts > f_hi * min(alpha, 1) / alpha] = S / 2 - ((S / 2 - f_hi * min(alpha, 1)) /
+                                                               (S / 2 - f_hi * min(alpha, 1) / alpha)) * (S / 2 - f)
     # calculate the difference between each mel point and each stft freq point in hertz
     f_diff = f_pts[1:] - f_pts[:-1]  # (n_mels + 1)
     slopes = f_pts.unsqueeze(0) - all_freqs.unsqueeze(1)  # (n_freqs, n_mels + 2)
@@ -120,26 +132,22 @@ class VtlpMelScale(nn.Module):
 
         assert f_min <= self.f_max, 'Require f_min: %f < f_max: %f' % (f_min, self.f_max)
 
-        fb = torch.empty(0) if n_stft is None else F.create_fb_matrix(
-            n_stft, self.f_min, self.f_max, self.n_mels, self.sample_rate)
-        self.register_buffer('fb', fb)
-
     def forward(self, specgram):
         # pack batch
         shape = specgram.size()
         specgram = specgram.reshape(-1, shape[-2], shape[-1])
 
-        if self.fb.numel() == 0:
-            tmp_fb = create_fb_matrix(specgram.size(1), self.f_min, self.f_max, self.n_mels, self.sample_rate)
-            # Attributes cannot be reassigned outside __init__ so workaround
-            self.fb.resize_(tmp_fb.size())
-            self.fb.copy_(tmp_fb)
-
+        fb = create_vtlp_fb_matrix(specgram.size(1), self.f_min, self.f_max, self.n_mels, self.sample_rate,
+                                   random.random() * 0.2 + 0.9, training=self.training).to(specgram.device)
         # (channel, frequency, time).transpose(...) dot (frequency, n_mels)
         # -> (channel, time, n_mels).transpose(...)
-        mel_specgram = torch.matmul(specgram.transpose(1, 2), self.fb).transpose(1, 2)
-
+        mel_specgram = torch.matmul(specgram.transpose(1, 2), fb).transpose(1, 2)
         # unpack batch
         mel_specgram = mel_specgram.reshape(shape[:-2] + mel_specgram.shape[-2:])
-
         return mel_specgram
+
+
+def apply_vtlp(mel_spectrogram: MelSpectrogram):
+    s = mel_spectrogram
+    s.mel_scale = VtlpMelScale(s.n_mels, s.sample_rate, s.f_min, s.f_max, s.n_fft // 2 + 1)
+    return s
