@@ -9,9 +9,9 @@ import torch.nn as nn
 import torch.utils.data as tud
 
 from squawk.data import load_freesounds, batchify, StandardAudioTransform, ZmuvTransform, SpecAugmentTransform,\
-    find_metric, identity
+    find_metric, IdentityTransform
 from squawk.model import LASClassifier, LASClassifierConfig, MobileNetClassifier, MNClassifierConfig
-from squawk.utils import prettify_dataclass, Workspace, set_seed
+from squawk.utils import prettify_dataclass, Workspace, set_seed, prepare_device
 
 
 def main():
@@ -25,24 +25,24 @@ def main():
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--model', type=str, default='las', choices=['las', 'mn'])
+    parser.add_argument('--num_gpu', type=int, default=1)
     args = parser.parse_args()
 
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    # prepare hardware accelearation
+    device, gpu_device_ids = prepare_device(args.num_gpu)
+    set_seed(args.seed, device)
 
     train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir))
     train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=batchify, num_workers=16, drop_last=True)
     dev_loader = tud.DataLoader(dev_ds, batch_size=10, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=10)
     spec_transform = StandardAudioTransform()
-    spec_transform.cuda()
-    set_seed(args.seed)
 
     if args.model == 'las':
         config = LASClassifierConfig(train_ds.info.num_labels)
-        model = LASClassifier(config).cuda()
+        model = LASClassifier(config)
     else:
         config = MNClassifierConfig(train_ds.info.num_labels)
-        model = MobileNetClassifier(config).cuda()
+        model = MobileNetClassifier(config)
     tqdm.write(prettify_dataclass(args))
     tqdm.write(prettify_dataclass(config))
 
@@ -51,8 +51,8 @@ def main():
     ws.write_args(args)
     writer = ws.summary_writer
 
-    zmuv_transform = ZmuvTransform().cuda()
-    sa_transform = SpecAugmentTransform().cuda() if args.use_spec_augment else identity
+    zmuv_transform = ZmuvTransform()
+    sa_transform = SpecAugmentTransform() if args.use_spec_augment else IdentityTransform
     criterion = nn.CrossEntropyLoss()
     params = list(filter(lambda x: x.requires_grad, model.parameters()))
     optimizer = AdamW(params, args.lr, weight_decay=args.weight_decay)
@@ -60,14 +60,31 @@ def main():
     tqdm.write(f'# Parameters: {sum(p.numel() for p in params)}')
     writer.add_scalar('Meta/Parameters', sum(p.numel() for p in params))
 
-    for ex in tqdm(chain(train_ds, dev_ds, test_ds), desc='Constructing ZMUV'):
-        zmuv_transform.update(spec_transform(ex.audio.cuda(), mels_only=True))
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # # Multiple GPU supports; To be enabled with further testing
+    # if len(gpu_device_ids) > 1:
+    #     model = torch.nn.DataParallel(model, device_ids=gpu_device_ids)
+
+    spec_transform = spec_transform.to(device)
+    model = model.to(device)
+    zmuv_transform = zmuv_transform.to(device)
+    sa_transform = sa_transform.to(device)
+
+    for batch in tqdm(train_loader, desc='Constructing ZMUV with train dataset'):
+        audio = batch.audio.to(device)
+        zmuv_transform.update(spec_transform(audio, mels_only=True))
+
+    for batch in tqdm(dev_loader, desc='Constructing ZMUV with dev dataset'):
+        audio = batch.audio.to(device)
+        zmuv_transform.update(spec_transform(audio, mels_only=True))
 
     for epoch_idx in trange(args.num_epochs, position=0, leave=True):
         model.train()
         pbar = tqdm(train_loader, total=len(train_loader), position=1, desc='Training', leave=True)
         for batch in pbar:
-            batch.cuda()
+            batch.to(device)
             audio = spec_transform(sa_transform(zmuv_transform(spec_transform(batch.audio, mels_only=True))), deltas_only=True)
             lengths = batch.lengths.clone()
             for idx, x in enumerate(lengths):
