@@ -83,7 +83,7 @@ def load_freesounds(folder: Path):
         data_folder = folder / f'FSDKaggle2018.audio_{name}'
         audio_data = []
         label_data = []
-        for wav_file in ctqdm(list(data_folder.glob('*.wav')), desc='Preparing {} dataset'.format(name)):
+        for wav_file in ctqdm(list(data_folder.glob('*.wav')), desc=f'Preparing {name} dataset'):
             audio, sr = torchaudio.load(wav_file)
             audio_data.append(audio)
             label_data.append(label_map[wav_file.name])

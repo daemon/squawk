@@ -40,6 +40,9 @@ def batchify(examples: Sequence[ClassificationExample], max_length: int = None, 
 
 
 class IdentityTransform(nn.Module):
+    def __init__(self):
+        super().__init__()
+
     def forward(self, x):
         return x
 

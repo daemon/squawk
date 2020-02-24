@@ -25,7 +25,7 @@ def main():
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--model', type=str, default='las', choices=['las', 'mn'])
-    parser.add_argument('--num_gpu', type=int, default=1)
+    parser.add_argument('--num-gpu', type=int, default=1)
     args = parser.parse_args()
 
     # prepare hardware accelearation
@@ -52,7 +52,7 @@ def main():
     writer = ws.summary_writer
 
     zmuv_transform = ZmuvTransform()
-    sa_transform = SpecAugmentTransform() if args.use_spec_augment else IdentityTransform
+    sa_transform = SpecAugmentTransform() if args.use_spec_augment else IdentityTransform()
     criterion = nn.CrossEntropyLoss()
     params = list(filter(lambda x: x.requires_grad, model.parameters()))
     optimizer = AdamW(params, args.lr, weight_decay=args.weight_decay)
