@@ -15,11 +15,11 @@ class Workspace(object):
     def __post_init__(self):
         self.path.mkdir(exist_ok=True)
         log_path = self.path / 'logs'
-        self.summary_writer = SummaryWriter(str(log_path))
         try:
             shutil.rmtree(log_path)
         except:
             pass
+        self.summary_writer = SummaryWriter(str(log_path))
 
     def write_config(self, config):
         with open(self.path / 'config.json', 'w') as f:

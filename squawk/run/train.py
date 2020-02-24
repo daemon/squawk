@@ -1,3 +1,5 @@
+from copy import deepcopy
+from functools import partial
 from itertools import chain
 from pathlib import Path
 import argparse
@@ -9,12 +11,31 @@ import torch.nn as nn
 import torch.utils.data as tud
 
 from squawk.data import load_freesounds, batchify, StandardAudioTransform, ZmuvTransform, SpecAugmentTransform,\
-    find_metric, identity
+    find_metric, identity, timeshift, compose, SpecAugmentConfig
 from squawk.model import LASClassifier, LASClassifierConfig, MobileNetClassifier, MNClassifierConfig
 from squawk.utils import prettify_dataclass, Workspace, set_seed
 
 
 def main():
+    def evaluate(data_loader, prefix: str):
+        model.eval()
+        pbar = tqdm(data_loader, total=len(data_loader), position=1, desc=prefix, leave=True)
+        for tracker in trackers:
+            tracker.reset()
+        for batch in pbar:
+            batch.cuda()
+            lengths = batch.lengths.clone()
+            for idx, x in enumerate(lengths):
+                lengths[idx] = spec_transform.compute_length(x)
+            audio = spec_transform(zmuv_transform(spec_transform(batch.audio, mels_only=True)), deltas_only=True)
+            with torch.no_grad():
+                scores = model(audio, lengths)
+            for tracker in trackers:
+                tracker.update(scores, batch.labels)
+        for tracker in trackers:
+            writer.add_scalar(f'{prefix}/Loss/{tracker.name}', tracker.value, epoch_idx)
+            tqdm.write(f'{epoch_idx + 1},{tracker.name},{tracker.value:.4f}')
+
     parser = argparse.ArgumentParser()
     parser.add_argument('dir', type=str)
     parser.add_argument('--num-epochs', '-ne', type=int, default=20)
@@ -25,14 +46,21 @@ def main():
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--model', type=str, default='las', choices=['las', 'mn'])
+    parser.add_argument('--no-timewarp', '-notw', action='store_false', dest='use_timewarp')
+    parser.add_argument('--use-timeshift', action='store_true')
     args = parser.parse_args()
 
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
     train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir))
-    train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=batchify, num_workers=16, drop_last=True)
+    if args.use_timeshift:
+        train_collate = compose(deepcopy, partial(timeshift, sr=train_ds.info.sample_rate), batchify)
+    else:
+        train_collate = batchify
+    train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=train_collate, num_workers=16, drop_last=True)
     dev_loader = tud.DataLoader(dev_ds, batch_size=10, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=10)
+    test_loader = tud.DataLoader(test_ds, batch_size=10, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=10)
     spec_transform = StandardAudioTransform()
     spec_transform.cuda()
     set_seed(args.seed)
@@ -51,8 +79,9 @@ def main():
     ws.write_args(args)
     writer = ws.summary_writer
 
+    sa_config = SpecAugmentConfig(use_timewarp=args.use_timewarp)
     zmuv_transform = ZmuvTransform().cuda()
-    sa_transform = SpecAugmentTransform().cuda() if args.use_spec_augment else identity
+    sa_transform = SpecAugmentTransform(sa_config).cuda() if args.use_spec_augment else identity
     criterion = nn.CrossEntropyLoss()
     params = list(filter(lambda x: x.requires_grad, model.parameters()))
     optimizer = AdamW(params, args.lr, weight_decay=args.weight_decay)
@@ -79,25 +108,10 @@ def main():
             optimizer.step()
             pbar.set_postfix(dict(loss=f'{loss.item():.3}'))
 
-        model.eval()
-        pbar = tqdm(dev_loader, total=len(dev_loader), position=1, desc='Testing', leave=True)
-        for tracker in trackers:
-            tracker.reset()
-        for batch in pbar:
-            batch.cuda()
-            lengths = batch.lengths.clone()
-            for idx, x in enumerate(lengths):
-                lengths[idx] = spec_transform.compute_length(x)
-            audio = spec_transform(zmuv_transform(spec_transform(batch.audio, mels_only=True)), deltas_only=True)
-            with torch.no_grad():
-                scores = model(audio, lengths)
-            for tracker in trackers:
-                tracker.update(scores, batch.labels)
+        evaluate(dev_loader, 'Dev')
         if epoch_idx == 9:
             optimizer = AdamW(params, args.lr / 3, weight_decay=args.weight_decay)
-        for tracker in trackers:
-            writer.add_scalar(f'Dev/Loss/{tracker.name}', tracker.value, epoch_idx)
-            tqdm.write(f'{epoch_idx + 1},{tracker.name},{tracker.value:.4f}')
+    evaluate(test_loader, 'Test')
 
 
 if __name__ == '__main__':

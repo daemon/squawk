@@ -32,6 +32,10 @@ class ClassificationBatch(object):
     labels: torch.LongTensor
     lengths: torch.LongTensor = None
 
+    def half(self):
+        self.audio = self.audio.half()
+        return self
+
     def cuda(self):
         self.audio = self.audio.cuda()
         self.labels = self.labels.cuda()

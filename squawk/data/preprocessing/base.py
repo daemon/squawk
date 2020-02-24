@@ -1,13 +1,10 @@
-from dataclasses import dataclass
 from typing import Sequence
-import random
 
 from torchaudio.transforms import MelSpectrogram, ComputeDeltas
 import torch
 import torch.nn as nn
 
-from .dataset import ClassificationExample, ClassificationBatch
-from squawk.data.spec_augment_tensorflow import sparse_warp
+from squawk.data.dataset import ClassificationExample, ClassificationBatch
 
 
 # Written as a class for multiprocessing serialization
@@ -47,49 +44,6 @@ def move_cuda(batch: ClassificationBatch):
 
 def identity(x):
     return x
-
-
-@dataclass
-class SpecAugmentConfig(object):
-    W: int = 80
-    F: int = 40
-    mF: int = 2
-    T: int = 100
-    p: float = 1.0
-    mT: int = 2
-
-
-class SpecAugmentTransform(nn.Module):
-
-    def __init__(self, config: SpecAugmentConfig = SpecAugmentConfig()):
-        super().__init__()
-        self.config = config
-
-    def timewarp(self, x):
-        x = x.permute(0, 2, 1).contiguous().unsqueeze(-1)
-        x = torch.from_numpy(sparse_warp(x.cpu().numpy(), self.config.W)).to(x.device).squeeze(-1).permute(0, 2, 1).contiguous()
-        return x
-
-    def tmask(self, x):
-        for idx in range(x.size(0)):
-            t = random.randrange(0, self.config.T)
-            t0 = random.randrange(0, x.size(2) - t)
-            x[idx, :, t0:t0 + t] = 0
-        return x
-
-    def fmask(self, x):
-        for idx in range(x.size(0)):
-            f = random.randrange(0, self.config.F)
-            f0 = random.randrange(0, x.size(1) - f)
-            x[idx, f0:f0 + f] = 0
-        return x
-
-    def forward(self, x):
-        with torch.no_grad():
-            x = torch.cat([self.timewarp(y) for y in x.squeeze(1).split(1, 0)], 0)
-            x = self.tmask(x)
-            x = self.fmask(x)
-        return x
 
 
 class ZmuvTransform(nn.Module):
