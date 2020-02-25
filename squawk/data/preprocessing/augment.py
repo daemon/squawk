@@ -88,7 +88,7 @@ class SpecAugmentTransform(nn.Module):
         return x
 
 
-def create_vtlp_fb_matrix(n_freqs, f_min, f_max, n_mels, sample_rate, alpha, f_hi=4800 / 16000, training=True):
+def create_vtlp_fb_matrix(n_freqs, f_min, f_max, n_mels, sample_rate, alpha, f_hi=4800, training=True):
     # type: (int, float, float, int, int, float, int, bool) -> torch.Tensor
     # freq bins
     # Equivalent filterbank construction by Librosa
@@ -103,7 +103,6 @@ def create_vtlp_fb_matrix(n_freqs, f_min, f_max, n_mels, sample_rate, alpha, f_h
     # mel to hertz(mel) is 700. * (10**(mel / 2595.) - 1.)
     f_pts = 700.0 * (10 ** (m_pts / 2595.0) - 1.0)
     if training:
-        f_hi = int(f_hi * sample_rate)
         f_pts[f_pts <= f_hi * min(alpha, 1) / alpha] *= alpha
         f = f_pts[f_pts > f_hi * min(alpha, 1) / alpha]
         f_pts[f_pts > f_hi * min(alpha, 1) / alpha] = S / 2 - ((S / 2 - f_hi * min(alpha, 1)) /
