@@ -24,7 +24,7 @@ def main():
         for tracker in trackers:
             tracker.reset()
         for batch in pbar:
-            batch.cuda()
+            batch.to(device)
             lengths = batch.lengths.clone()
             for idx, x in enumerate(lengths):
                 lengths[idx] = spec_transform.compute_length(x)
