@@ -13,7 +13,7 @@ class Workspace(object):
     path: Path
 
     def __post_init__(self):
-        self.path.mkdir(exist_ok=True)
+        self.path.mkdir(parents=True, exist_ok=True)
         log_path = self.path / 'logs'
         try:
             shutil.rmtree(log_path)

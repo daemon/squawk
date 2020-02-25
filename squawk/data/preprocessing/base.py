@@ -8,6 +8,7 @@ from squawk.data.dataset import ClassificationExample, ClassificationBatch
 
 # Written as a class for multiprocessing serialization
 class Composition(object):
+
     def __init__(self, modules):
         self.modules = modules
 
@@ -16,6 +17,15 @@ class Composition(object):
             args = mod(*args)
             args = (args,)
         return args[0]
+
+
+class IdentityTransform(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x
 
 
 def compose(*collate_modules):
