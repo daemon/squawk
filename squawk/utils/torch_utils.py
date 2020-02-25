@@ -3,13 +3,10 @@ import random
 import torch
 
 
-def set_seed(seed, device):
+def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-    if "cuda" in str(device):
-        torch.cuda.manual_seed(seed)
 
 
 def prepare_device(n_gpu_use):

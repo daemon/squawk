@@ -53,9 +53,8 @@ def main():
     parser.add_argument('--num-gpu', type=int, default=1)
     args = parser.parse_args()
 
-    # prepare hardware accelearation
     device, gpu_device_ids = prepare_device(args.num_gpu)
-    set_seed(args.seed, device)
+    set_seed(args.seed)
 
     train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir))
     if args.use_timeshift:
@@ -67,7 +66,6 @@ def main():
     test_loader = tud.DataLoader(test_ds, batch_size=10, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=10)
     spec_transform = StandardAudioTransform(use_vtlp=args.use_vtlp)
     spec_transform.cuda()
-    set_seed(args.seed)
 
     if args.model == 'las':
         config = LASClassifierConfig(train_ds.info.num_labels)
