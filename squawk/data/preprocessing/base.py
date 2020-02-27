@@ -45,12 +45,6 @@ def batchify(examples: Sequence[ClassificationExample], max_length: int = None, 
     return batch
 
 
-def move_cuda(batch: ClassificationBatch):
-    batch.audio = batch.audio.cuda()
-    batch.label = batch.label.cuda()
-    return batch
-
-
 def identity(x):
     return x
 
