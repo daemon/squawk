@@ -19,3 +19,9 @@ class MobileNetClassifier(nn.Module):
 
     def forward(self, x, lengths):
         return self.model(x)
+
+
+def convert_half(module: nn.Module):
+    for mod in module.modules():
+        if not isinstance(mod, nn.BatchNorm2d):
+            mod.half()
