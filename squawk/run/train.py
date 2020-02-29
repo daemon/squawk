@@ -1,5 +1,4 @@
 from copy import deepcopy
-from functools import partial
 from itertools import chain
 from pathlib import Path
 import argparse
@@ -11,7 +10,7 @@ import torch.nn as nn
 import torch.utils.data as tud
 
 from squawk.data import load_freesounds, batchify, StandardAudioTransform, ZmuvTransform, SpecAugmentTransform,\
-    find_metric, timeshift, compose, SpecAugmentConfig, IdentityTransform
+    find_metric, TimeshiftTransform, compose, SpecAugmentConfig, IdentityTransform
 from squawk.model import LASClassifier, LASClassifierConfig, MobileNetClassifier, MNClassifierConfig
 from squawk.utils import prettify_dataclass, Workspace, set_seed, prepare_device
 
@@ -58,8 +57,9 @@ def main():
     set_seed(args.seed)
 
     train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir))
+    timeshift_transform = TimeshiftTransform(sr=train_ds.info.sample_rate)
     if args.use_timeshift:
-        train_collate = compose(deepcopy, partial(timeshift, sr=train_ds.info.sample_rate), batchify)
+        train_collate = compose(deepcopy, timeshift_transform.shift, batchify)
     else:
         train_collate = batchify
     train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=train_collate, num_workers=16, drop_last=True)

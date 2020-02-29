@@ -11,14 +11,38 @@ from squawk.data.dataset import ClassificationExample
 from squawk.data.preprocessing.spec_augment_tensorflow import sparse_warp
 
 
-def timeshift(examples: Sequence[ClassificationExample], W=0.8, sr=44100, p=0.5):
-    new_examples = []
-    for example in examples:
-        label = example.label
-        w = min(int(random.random() * W * sr), int(p * example.audio.size(1)))
-        audio = example.audio[:, w:] if random.random() < 0.5 else example.audio[:, :example.audio.size(1) - w]
-        new_examples.append(ClassificationExample(audio, label))
-    return new_examples
+class TimeshiftTransform(nn.Module):
+
+    def __init__(self, W=0.8, sr=44100, p=0.5):
+        super().__init__()
+        self.register_buffer('W', torch.Tensor([W]))
+        self.register_buffer('sr', torch.Tensor([sr]))
+        self.register_buffer('p', torch.Tensor([p]))
+
+    def shift(self, examples: Sequence[ClassificationExample]):
+        new_examples = []
+        for example in examples:
+            label = example.label
+            w = min(int(random.random() * self.W.item() * self.sr.item()), int(self.p.item() * example.audio.size(1)))
+            audio = example.audio[:, w:] if random.random() < 0.5 else example.audio[:, :example.audio.size(1) - w]
+            new_examples.append(ClassificationExample(audio, label))
+        return new_examples
+
+
+class NoiseTransform(nn.Module):
+
+    def __init__(self, white_noise_strength=0.1, salt_pepper_prob=0.01):
+        super().__init__()
+        self.register_buffer('white_noise_strength', torch.Tensor([white_noise_strength]))
+        self.register_buffer('salt_pepper_prob', torch.Tensor([salt_pepper_prob]))
+
+    def forward(self, waveform, lengths=None):
+        noise_mask = torch.empty_like(waveform).normal_(0, self.white_noise_strength.item()) + \
+                     (2 * torch.empty_like(waveform).bernoulli_(self.salt_pepper_prob.item()) - 1)
+        noise_mask.clamp_(-1, 1)
+        for idx, length in enumerate(lengths.tolist()):
+            waveform[idx, :length] = (waveform[idx, :length] + noise_mask).clamp_(-1, 1)
+        return waveform
 
 
 @dataclass
