@@ -20,6 +20,8 @@ class TimeshiftTransform(nn.Module):
         self.register_buffer('p', torch.Tensor([p]))
 
     def shift(self, examples: Sequence[ClassificationExample]):
+        if not self.training:
+            return examples
         new_examples = []
         for example in examples:
             label = example.label
@@ -37,6 +39,8 @@ class NoiseTransform(nn.Module):
         self.register_buffer('salt_pepper_prob', torch.Tensor([salt_pepper_prob]))
 
     def forward(self, waveform, lengths=None):
+        if not self.training:
+            return waveform
         noise_mask = torch.empty_like(waveform).normal_(0, self.white_noise_strength.item()) + \
                      (2 * torch.empty_like(waveform).bernoulli_(self.salt_pepper_prob.item()) - 1)
         noise_mask.clamp_(-1, 1)

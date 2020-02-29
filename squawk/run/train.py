@@ -5,6 +5,7 @@ import argparse
 
 from tqdm import trange, tqdm
 from torch.optim.adamw import AdamW
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.data as tud
@@ -50,13 +51,14 @@ def main():
     parser.add_argument('--use-timeshift', '-ts', action='store_true')
     parser.add_argument('--use-vtlp', '-vtlp', action='store_true')
     parser.add_argument('--num-gpu', type=int, default=1)
+    parser.add_argument('--lru-maxsize', type=int, default=np.inf)
     parser.add_argument('--use-pba', action='store_true')
     args = parser.parse_args()
 
     device, gpu_device_ids = prepare_device(args.num_gpu)
     set_seed(args.seed)
 
-    train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir))
+    train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir), lru_maxsize=args.lru_maxsize)
     timeshift_transform = TimeshiftTransform(sr=train_ds.info.sample_rate)
     if args.use_timeshift:
         train_collate = compose(deepcopy, timeshift_transform.shift, batchify)

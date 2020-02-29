@@ -1,7 +1,9 @@
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data as tud
@@ -18,6 +20,33 @@ class DatasetInfo(object):
 
     def __post_init__(self):
         self.num_labels = len(self.label_map)
+
+
+class LruCache(object):
+
+    def __init__(self, capacity=np.inf, load_fn=None):
+        self.capacity = capacity
+        self.cache = OrderedDict()
+        self.load_fn = load_fn
+
+    def __getitem__(self, key):
+        try:
+            value = self.cache.pop(key)
+            self.cache[key] = value
+        except KeyError:
+            if self.load_fn is not None:
+                self[key] = value = self.load_fn(key)
+            else:
+                raise KeyError
+        return value
+
+    def __setitem__(self, key, value):
+        try:
+            self.cache.pop(key)
+        except KeyError:
+            if len(self.cache) >= self.capacity:
+                self.cache.popitem(last=False)
+        self.cache[key] = value
 
 
 @dataclass
@@ -46,12 +75,19 @@ class ClassificationBatch(object):
 
 @dataclass
 class ClassificationDataset(tud.Dataset):
-    audio_data: Sequence[torch.Tensor]
+    audio_data: Sequence[str]
     label_data: Sequence[int]
     info: DatasetInfo
+    lru_cache: LruCache
+
+    def __post_init__(self):
+        self.lru_cache.load_fn = self.load
 
     def __len__(self):
         return len(self.audio_data)
+
+    def load(self, idx):
+        return torchaudio.load(self.audio_data[idx])[0]
 
     def split(self, proportion):
         proportion = int(proportion * len(self.audio_data))
@@ -59,16 +95,14 @@ class ClassificationDataset(tud.Dataset):
         audio_data2 = self.audio_data[proportion:]
         label_data1 = self.label_data[:proportion]
         label_data2 = self.label_data[proportion:]
-        return ClassificationDataset(audio_data1, label_data1, self.info), ClassificationDataset(audio_data2, label_data2, self.info)
-
-    def to(self, device):
-        self.audio_data = [x.to(device) for x in self.audio_data]
+        return ClassificationDataset(audio_data1, label_data1, self.info, LruCache(self.lru_cache.capacity)),\
+               ClassificationDataset(audio_data2, label_data2, self.info, LruCache(self.lru_cache.capacity))
 
     def __getitem__(self, idx):
-        return ClassificationExample(self.audio_data[idx], self.label_data[idx])
+        return ClassificationExample(self.lru_cache[idx], self.label_data[idx])
 
 
-def load_freesounds(folder: Path):
+def load_freesounds(folder: Path, lru_maxsize=np.inf):
     def load_split(name):
         train_csv_path = folder / 'FSDKaggle2018.meta' / f'train_post_competition.csv'
         labels_csv_path = folder / 'FSDKaggle2018.meta' / f'{name}_post_competition{"_scoring_clips" if name == "test" else ""}.csv'
@@ -84,9 +118,10 @@ def load_freesounds(folder: Path):
         audio_data = []
         label_data = []
         for wav_file in ctqdm(list(data_folder.glob('*.wav')), desc=f'Preparing {name} dataset'):
-            audio, sr = torchaudio.load(wav_file)
-            audio_data.append(audio)
+            audio_data.append(str(wav_file))
             label_data.append(label_map[wav_file.name])
-        return ClassificationDataset(audio_data, label_data, DatasetInfo('FreeSounds', sr, l2idx))
+        _, sr = torchaudio.load(wav_file)
+        return ClassificationDataset(audio_data, label_data, DatasetInfo('FreeSounds', sr, l2idx), LruCache(lru_maxsize))
     train_split, dev_split = load_split('train').split(0.9)
-    return train_split, dev_split, load_split('test')
+    test_split = load_split('test')
+    return train_split, dev_split, test_split
