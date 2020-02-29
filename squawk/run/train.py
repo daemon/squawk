@@ -51,6 +51,7 @@ def main():
     parser.add_argument('--use-timeshift', '-ts', action='store_true')
     parser.add_argument('--use-vtlp', '-vtlp', action='store_true')
     parser.add_argument('--num-gpu', type=int, default=1)
+    parser.add_argument('--use-pba', action='store_true')
     args = parser.parse_args()
 
     device, gpu_device_ids = prepare_device(args.num_gpu)
@@ -62,8 +63,8 @@ def main():
     else:
         train_collate = batchify
     train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=train_collate, num_workers=16, drop_last=True)
-    dev_loader = tud.DataLoader(dev_ds, batch_size=10, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=10)
-    test_loader = tud.DataLoader(test_ds, batch_size=10, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=10)
+    dev_loader = tud.DataLoader(dev_ds, batch_size=16, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=16)
+    test_loader = tud.DataLoader(test_ds, batch_size=16, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=16)
     spec_transform = StandardAudioTransform(use_vtlp=args.use_vtlp)
     spec_transform.cuda()
 
@@ -105,7 +106,15 @@ def main():
 
     for batch in tqdm(chain(train_loader, dev_loader), desc='Constructing ZMUV', total=len(train_loader) + len(dev_loader)):
         audio = batch.audio.to(device)
-        zmuv_transform.update(spec_transform(audio, mels_only=True))
+        lengths = batch.lengths.clone()
+        for idx, x in enumerate(lengths):
+            lengths[idx] = spec_transform.compute_length(x)
+
+        audio = spec_transform(audio, mels_only=True)
+        mask = torch.zeros_like(audio)
+        for batch_idx, length in enumerate(lengths.tolist()):
+            mask[batch_idx, :, :length] = 1
+        zmuv_transform.update(audio, mask=mask)
 
     for epoch_idx in trange(args.num_epochs, position=0, leave=True):
         model.train()

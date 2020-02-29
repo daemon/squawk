@@ -1,0 +1,204 @@
+from dataclasses import dataclass, field
+from typing import Sequence, Mapping, List
+import json
+import pathlib
+import os
+import random
+import time
+
+import numpy as np
+import torch
+
+from squawk.utils import FileLock
+
+
+@dataclass
+class AugmentationParameter(object):
+    domain: Sequence[float]
+    name: str
+    current_value_idx: int = None
+    prob: float = 0.2
+
+    @classmethod
+    def from_dict(cls, data_dict):
+        return cls(data_dict['domain'], data_dict['name'], data_dict['current_value_idx'], data_dict['prob'])
+
+
+class PbaMetaOptimizer(object):
+
+    def __init__(self,
+                 weight_path: str,
+                 augment_map: Mapping[str, AugmentationParameter],
+                 resample_prob=0.2,
+                 index_amount_perturb=(0, 1, 2, 3),
+                 datafile_path='.pba-meta.json',
+                 quality=-100000,
+                 step_no=0,
+                 id=None,
+                 exploit_epochs=3,
+                 lock=None,
+                 metadata=None):
+        self.augment_map = augment_map
+        self.resample_prob = resample_prob
+        self.index_amount_perturb = index_amount_perturb
+        self.weight_path = weight_path
+        for v in augment_map.values():
+            if v.current_value_idx is None:
+                v.current_value_idx = random.choice(v.domain)
+        self.quality = quality
+        self.step_no = step_no
+        self.exploit_epochs = exploit_epochs
+        self.datafile_path = pathlib.Path(datafile_path)
+        self.lock_file = self.datafile_path.with_suffix('.lock')
+        with self.lock(grab=lock is None) as lock:
+            if metadata is None:
+                try:
+                    self.metadata = PbaMetadata.load(self.datafile_path, lock=lock)
+                except FileNotFoundError:
+                    self.metadata = PbaMetadata()
+            else:
+                self.metadata = metadata
+            self.id = self.metadata.last_id if id is None else id
+            if metadata is None:
+                self.save(lock=lock, increment=id is None)
+
+    def lock(self, grab=True):
+        return FileLock(self.lock_file, grab=grab)
+
+    def dict(self):
+        return dict(quality=self.quality,
+                    step_no=self.step_no,
+                    datafile_path=str(self.datafile_path),
+                    index_amount_perturb=self.index_amount_perturb,
+                    resample_prob=self.resample_prob,
+                    exploit_epochs=self.exploit_epochs,
+                    weight_path=self.weight_path,
+                    id=self.id,
+                    augment_map={k: v.__dict__ for k, v in self.augment_map.items()})
+
+    def fence(self, lock):
+        while all(opt.step_no > self.step_no for opt in self.metadata.optimizers):
+            lock.unlock()
+            time.sleep(5)
+            lock.lock()
+            self.metadata = PbaMetadata.load(self.datafile_path, lock=lock)
+
+    def step(self, quality: float, load_callback=None):
+        self.quality = quality
+        self.step_no += 1
+        self.save()
+        if self.step_no >= self.exploit_epochs:
+            with self.lock() as lock:
+                self.fence(lock)
+                self.metadata = PbaMetadata.load(self.datafile_path, lock=lock)
+                opt_perfs = [opt.quality for opt in self.metadata.optimizers]
+                if self.quality <= np.quantile(opt_perfs, 0.25):
+                    q75 = np.quantile(opt_perfs, 0.75)
+                    top25_opt = random.choice(list(filter(lambda opt: opt.quality >= q75, self.metadata.optimizers)))
+                    self.augment_map = top25_opt.augment_map
+                    self.quality = top25_opt.quality
+                    if load_callback: load_callback(torch.load(top25_opt.weight_path))
+        self.explore()
+
+    def explore(self):
+        for param in self.augment_map.values():
+            if random.random() < 0.2:
+                param.current_value_idx = random.choice(list(range(len(param.domain))))
+            else:
+                amount = random.choice([0, 1, 2, 3])
+                if random.random() < 0.5:
+                    param.current_value_idx += amount
+                else:
+                    param.current_value_idx -= amount
+                param.current_value_idx = max(min(param.current_value_idx, len(param.domain) - 1), 0)
+            if random.random() < 0.2:
+                param.prob = random.choice(np.linspace(0, 1, 11))
+            else:
+                param.prob += random.choice(np.linspace(-0.3, 0.3, 7))
+                param.prob = max(min(param.prob, 1), 0)
+
+    def sample(self):
+        count = np.random.choice([0, 1, 2, 3, 4, 5], p=[0.05, 0.05, 0.1, 0.2, 0.2, 0.4])
+        params = list(self.augment_map.items())
+        random.shuffle(params)
+        sampled_params = []
+        for _, param in params:
+            if count == 0:
+                break
+            if random.random() < param.prob:
+                sampled_params.append(param)
+                count -= 1
+        return sampled_params
+
+    def __enter__(self, *args):
+        pass
+
+    def __exit__(self, *args):
+        self.cleanup()
+
+    def cleanup(self):
+        self.save(decrement=True)
+        if self.metadata.curr_count == 0:
+            os.remove(str(self.datafile_path))
+            os.remove(str(self.lock_file))
+
+    def save(self, lock=None, increment=False, decrement=False):
+        with self.lock(grab=lock is None) as lock:
+            try:
+                self.metadata = metadata = PbaMetadata.load(self.datafile_path, lock=lock)
+            except FileNotFoundError:
+                metadata = self.metadata
+            inc = 0
+            if increment:
+                inc = 1
+            if decrement:
+                inc = -1
+            metadata.curr_count += inc
+            metadata.last_id += inc
+            idx = next((idx for idx, opt in enumerate(metadata.optimizers) if opt.id == self.id), None)
+            if idx is None:
+                metadata.optimizers.append(self)
+            else:
+                metadata.optimizers[idx] = self
+            metadata.save(self.datafile_path, lock=lock)
+
+    @classmethod
+    def from_dict(cls, data_dict, lock=None, metadata=None):
+        return cls(data_dict['weight_path'],
+                   {k: AugmentationParameter.from_dict(v) for k, v in data_dict['augment_map'].items()},
+                   resample_prob=data_dict['resample_prob'],
+                   quality=data_dict['quality'],
+                   step_no=data_dict['step_no'],
+                   datafile_path=data_dict['datafile_path'],
+                   index_amount_perturb=data_dict['index_amount_perturb'],
+                   exploit_epochs=data_dict['exploit_epochs'],
+                   lock=lock,
+                   metadata=metadata,
+                   id=data_dict.get('id'))
+
+
+@dataclass
+class PbaMetadata(object):
+    last_id: int = 0
+    curr_count: int = 0
+    optimizers: List[PbaMetaOptimizer] = field(default_factory=list)
+
+    def dict(self):
+        return dict(last_id=self.last_id,
+                    curr_count=self.curr_count,
+                    optimizers=[x.dict() for x in self.optimizers])
+
+    @classmethod
+    def from_dict(cls, data_dict, lock=None):
+        metadata = cls(data_dict['last_id'], data_dict['curr_count'])
+        metadata.optimizers = [PbaMetaOptimizer.from_dict(v, lock=lock, metadata=metadata) for v in data_dict['optimizers']]
+        return metadata
+
+    @classmethod
+    def load(cls, path: pathlib.Path, lock=None):
+        with FileLock(path.with_suffix('.lock'), grab=lock is None) as lock, open(str(path)) as f:
+            return cls.from_dict(json.load(f), lock=lock)
+
+    def save(self, path: pathlib.Path, lock=None):
+        with FileLock(path.with_suffix('.lock'), grab=lock is None), open(str(path), 'w') as f:
+            json.dump(self.dict(), f)

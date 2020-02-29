@@ -57,10 +57,16 @@ class ZmuvTransform(nn.Module):
         self.register_buffer('mean', torch.zeros(1))
         self.register_buffer('mean2', torch.zeros(1))
 
-    def update(self, data):
-        self.mean = (data.sum() + self.mean * self.total) / (self.total + data.numel())
-        self.mean2 = ((data ** 2).sum() + self.mean2 * self.total) / (self.total + data.numel())
-        self.total += data.numel()
+    def update(self, data, mask=None):
+        with torch.no_grad():
+            if mask is not None:
+                data = data * mask
+                mask_size = mask.sum().item()
+            else:
+                mask_size = data.numel()
+            self.mean = (data.sum() + self.mean * self.total) / (self.total + mask_size)
+            self.mean2 = ((data ** 2).sum() + self.mean2 * self.total) / (self.total + mask_size)
+            self.total += mask_size
 
     @property
     def std(self):
