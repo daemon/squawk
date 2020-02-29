@@ -4,6 +4,8 @@ import json
 import shutil
 
 from torch.utils.tensorboard import SummaryWriter
+import torch
+import torch.nn as nn
 
 from .dataclass import gather_dict
 
@@ -15,11 +17,11 @@ class Workspace(object):
     def __post_init__(self):
         self.path.mkdir(parents=True, exist_ok=True)
         log_path = self.path / 'logs'
-        try:
-            shutil.rmtree(log_path)
-        except:
-            pass
+        shutil.rmtree(str(log_path), ignore_errors=True)
         self.summary_writer = SummaryWriter(str(log_path))
+
+    def model_path(self, best=False):
+        return str(self.path / f'model{"-best" if best else ""}.pt.bin')
 
     def write_config(self, config):
         with open(self.path / 'config.json', 'w') as f:
@@ -28,3 +30,9 @@ class Workspace(object):
     def write_args(self, args):
         with open(self.path / 'cmd-args.json', 'w') as f:
             json.dump(gather_dict(args), f, indent=2)
+
+    def save_model(self, model: nn.Module, best=False):
+        torch.save(model.state_dict(), self.model_path(best=best))
+
+    def load_model(self, model: nn.Module, best=True):
+        model.load_state_dict(torch.load(self.model_path(best=best), lambda s, l: s))
