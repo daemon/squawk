@@ -66,7 +66,7 @@ class PbaMetaOptimizer(object):
                     augment_ops=[x.__dict__ for x in self.augment_ops])
 
     def fence(self, lock):
-        while all(opt.step_no > self.step_no for opt in self.metadata.optimizers):
+        while any(opt.step_no < self.step_no for opt in self.metadata.optimizers):
             lock.unlock()
             time.sleep(5)
             lock.lock()

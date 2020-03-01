@@ -71,6 +71,7 @@ def main():
     parser.add_argument('--use-noise', action='store_true')
     parser.add_argument('--target-metric', '-tm', type=str, default='MAP@3')
     parser.add_argument('--use-all', action='store_true')
+    parser.add_argument('--pba-init', type=str, choices=['random', 'default'], default='default')
     args = parser.parse_args()
 
     device, gpu_device_ids = prepare_device(args.num_gpu)
@@ -120,8 +121,12 @@ def main():
     writer.add_scalar('Meta/Parameters', sum(p.numel() for p in params))
 
     augment_modules = (timestretch_transform, timeshift_transform, noise_transform, sa_transform, spec_transform)
+    if args.pba_init == 'random':
+        for mod in augment_modules:
+            for param in mod.augment_params:
+                param.current_value_idx = None
     if args.use_pba:
-        augment_params = list(chain(*[mod.default_params for mod in augment_modules]))
+        augment_params = list(chain(*[mod.augment_params for mod in augment_modules]))
         pba_optimizer = PbaMetaOptimizer(ws.model_path(), augment_params)
 
     torch.backends.cudnn.deterministic = True
