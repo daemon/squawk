@@ -1,9 +1,11 @@
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Sequence, Mapping
 import math
 import random
 
 from torchaudio.transforms import MelSpectrogram, ComputeDeltas
+import numpy as np
+import librosa
 import torch
 import torch.nn as nn
 
@@ -11,41 +13,111 @@ from squawk.data.dataset import ClassificationExample
 from squawk.data.preprocessing.spec_augment_tensorflow import sparse_warp
 
 
-class TimeshiftTransform(nn.Module):
+@dataclass
+class AugmentationParameter(object):
+    domain: Sequence[float]
+    name: str
+    current_value_idx: int = None
+    prob: float = 0.2
+    enabled: bool = True
 
-    def __init__(self, W=0.8, sr=44100, p=0.5):
+    @property
+    def magnitude(self):
+        return self.domain[self.current_value_idx]
+
+    @classmethod
+    def from_dict(cls, data_dict):
+        return cls(data_dict['domain'], data_dict['name'], data_dict['current_value_idx'], data_dict['prob'])
+
+
+class AugmentModule(nn.Module):
+
+    def __init__(self):
         super().__init__()
-        self.register_buffer('W', torch.Tensor([W]))
-        self.register_buffer('sr', torch.Tensor([sr]))
-        self.register_buffer('p', torch.Tensor([p]))
 
-    def shift(self, examples: Sequence[ClassificationExample]):
+    @property
+    def default_params(self) -> Sequence[AugmentationParameter]:
+        raise NotImplementedError
+
+    def augment(self, param: AugmentationParameter, x, **kwargs):
+        raise NotImplementedError
+
+    def passthrough(self, x, **kwargs):
+        return x
+
+    def forward(self, x, augment_params: Sequence[AugmentationParameter] = None, **kwargs):
+        if augment_params is None:
+            augment_params = self.default_params
+        for param in augment_params:
+            x = self.augment(param, x, **kwargs) if param.enabled else self.passthrough(x, **kwargs)
+        return x
+
+
+class TimeshiftTransform(AugmentModule):
+
+    def __init__(self, sr=44100):
+        super().__init__()
+        self.sr = sr
+
+    @property
+    def default_params(self):
+        return AugmentationParameter([0.25, 0.5, 0.75, 1], 'timeshift', 2),
+
+    def augment(self, param: AugmentationParameter, examples: Sequence[ClassificationExample], **kwargs):
         if not self.training:
             return examples
         new_examples = []
         for example in examples:
             label = example.label
-            w = min(int(random.random() * self.W.item() * self.sr.item()), int(self.p.item() * example.audio.size(1)))
+            w = min(int(random.random() * param.magnitude * self.sr), int(0.5 * example.audio.size(1)))
             audio = example.audio[:, w:] if random.random() < 0.5 else example.audio[:, :example.audio.size(1) - w]
             new_examples.append(ClassificationExample(audio, label))
         return new_examples
 
 
-class NoiseTransform(nn.Module):
+class TimestretchTransform(AugmentModule):
 
-    def __init__(self, white_noise_strength=0.1, salt_pepper_prob=0.01):
+    def __init__(self):
         super().__init__()
-        self.register_buffer('white_noise_strength', torch.Tensor([white_noise_strength]))
-        self.register_buffer('salt_pepper_prob', torch.Tensor([salt_pepper_prob]))
 
-    def forward(self, waveform, lengths=None):
+    @property
+    def default_params(self):
+        return AugmentationParameter([0.01, 0.025, 0.05, 0.075, 0.1], 'timestretch', 2),
+
+    def augment(self, param, examples: Sequence[ClassificationExample], **kwargs):
+        if not self.training:
+            return examples
+        rate = np.clip(np.random.normal(1, param.magnitude), 0.75, 1.25)
+        new_examples = []
+        for example in examples:
+            audio = torch.from_numpy(librosa.effects.time_stretch(example.audio.squeeze().cpu().numpy(), rate))
+            audio = audio.unsqueeze(0)
+            new_examples.append(ClassificationExample(audio, example.label))
+        return new_examples
+
+
+class NoiseTransform(AugmentModule):
+
+    def __init__(self):
+        super().__init__()
+
+    @property
+    def default_params(self):
+        return AugmentationParameter([0.0001, 0.00025, 0.0005, 0.001, 0.002], 'white', 3),\
+               AugmentationParameter([1 / 60000, 1 / 45000, 1 / 30000, 1 / 15000, 1 / 7500], 'salt_pepper', 2)
+
+    def augment(self, param, waveform, lengths=None):
         if not self.training:
             return waveform
-        noise_mask = torch.empty_like(waveform).normal_(0, self.white_noise_strength.item()) + \
-                     (2 * torch.empty_like(waveform).bernoulli_(self.salt_pepper_prob.item()) - 1)
+        if param.name == 'white':
+            strength = param.magnitude * random.random()
+            noise_mask = torch.empty_like(waveform).normal_(0, strength)
+        else:
+            prob = param.magnitude * random.random()
+            noise_mask = torch.empty_like(waveform).bernoulli_(prob / 2) - torch.empty_like(waveform).bernoulli_(prob / 2)
         noise_mask.clamp_(-1, 1)
         for idx, length in enumerate(lengths.tolist()):
-            waveform[idx, :length] = (waveform[idx, :length] + noise_mask).clamp_(-1, 1)
+            waveform[idx, :length] = (waveform[idx, :length] + noise_mask[idx, :length]).clamp_(-1, 1)
         return waveform
 
 
@@ -60,59 +132,76 @@ class SpecAugmentConfig(object):
     use_timewarp: bool = True
 
 
-class StandardAudioTransform(nn.Module):
+class StandardAudioTransform(AugmentModule):
 
-    def __init__(self, sample_rate=44100, n_fft=int(400 / 16000 * 44100), use_vtlp=False):
+    def __init__(self, sample_rate=44100, n_fft=int(400 / 16000 * 44100)):
         super().__init__()
         self.spec_transform = MelSpectrogram(n_mels=80, sample_rate=sample_rate, n_fft=n_fft)
-        if use_vtlp:
-            self.spec_transform = apply_vtlp(self.spec_transform)
+        self.vtlp_transform = apply_vtlp(MelSpectrogram(n_mels=80, sample_rate=sample_rate, n_fft=n_fft))
         self.delta_transform = ComputeDeltas()
 
-    def forward(self, audio: torch.Tensor, mels_only=False, deltas_only=False):
+    @property
+    def default_params(self) -> Sequence[AugmentationParameter]:
+        return AugmentationParameter([0], 'vtlp', 0),
+
+    def _execute_op(self, op, audio, mels_only=False, deltas_only=False):
         with torch.no_grad():
-            log_mels = audio if deltas_only else self.spec_transform(audio).add_(1e-7).log_()
+            log_mels = audio if deltas_only else op(audio).add_(1e-7).log_()
             if mels_only:
                 return log_mels
             deltas = self.delta_transform(log_mels)
             accels = self.delta_transform(deltas)
             return torch.stack((log_mels, deltas, accels), 1)
 
+    def augment(self, param, audio: torch.Tensor, **kwargs):
+        return self._execute_op(self.vtlp_transform, audio, **kwargs)
+
+    def passthrough(self, audio: torch.Tensor, **kwargs):
+        return self._execute_op(self.spec_transform, audio, **kwargs)
+
     def compute_length(self, length: int):
         return int((length - self.spec_transform.win_length) / self.spec_transform.hop_length + 1)
 
 
-class SpecAugmentTransform(nn.Module):
+class SpecAugmentTransform(AugmentModule):
 
-    def __init__(self, config: SpecAugmentConfig = SpecAugmentConfig()):
+    def __init__(self, use_timewarp=False):
         super().__init__()
-        self.config = config
+        self.use_timewarp = use_timewarp
 
-    def timewarp(self, x):
+    @property
+    def default_params(self) -> Sequence[AugmentationParameter]:
+        return AugmentationParameter([40, 80, 160, 240, 320], 'sa_warp', 1),\
+               AugmentationParameter([20, 30, 40, 50, 60], 'sa_freq', 2),\
+               AugmentationParameter([50, 75, 100, 125, 150], 'sa_time', 2)
+
+    def timewarp(self, x, W):
         x = x.permute(0, 2, 1).contiguous().unsqueeze(-1)
-        x = torch.from_numpy(sparse_warp(x.cpu().numpy(), self.config.W)).to(x.device).squeeze(-1).permute(0, 2, 1).contiguous()
+        x = torch.from_numpy(sparse_warp(x.cpu().numpy(), W)).to(x.device).squeeze(-1).permute(0, 2, 1).contiguous()
         return x
 
-    def tmask(self, x):
+    def tmask(self, x, T):
         for idx in range(x.size(0)):
-            t = random.randrange(0, self.config.T)
+            t = random.randrange(0, T)
             t0 = random.randrange(0, x.size(2) - t)
             x[idx, :, t0:t0 + t] = 0
         return x
 
-    def fmask(self, x):
+    def fmask(self, x, F):
         for idx in range(x.size(0)):
-            f = random.randrange(0, self.config.F)
+            f = random.randrange(0, F)
             f0 = random.randrange(0, x.size(1) - f)
             x[idx, f0:f0 + f] = 0
         return x
 
-    def forward(self, x):
+    def augment(self, param, x, **kwargs):
         with torch.no_grad():
-            if self.config.use_timewarp:
-                x = torch.cat([self.timewarp(y) for y in x.squeeze(1).split(1, 0)], 0)
-            x = self.tmask(x)
-            x = self.fmask(x)
+            if self.use_timewarp and param.name == 'sa_warp':
+                return torch.cat([self.timewarp(y, param.magnitude) for y in x.squeeze(1).split(1, 0)], 0)
+            if param.name == 'sa_freq':
+                return self.fmask(x, param.magnitude)
+            elif param.name == 'sa_time':
+                return self.tmask(x, param.magnitude)
         return x
 
 
