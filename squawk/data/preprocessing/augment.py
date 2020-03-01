@@ -34,6 +34,7 @@ class AugmentModule(nn.Module):
 
     def __init__(self):
         super().__init__()
+        self.augment_params = self.default_params
 
     @property
     def default_params(self) -> Sequence[AugmentationParameter]:
@@ -45,10 +46,8 @@ class AugmentModule(nn.Module):
     def passthrough(self, x, **kwargs):
         return x
 
-    def forward(self, x, augment_params: Sequence[AugmentationParameter] = None, **kwargs):
-        if augment_params is None:
-            augment_params = self.default_params
-        for param in augment_params:
+    def forward(self, x, **kwargs):
+        for param in self.augment_params:
             x = self.augment(param, x, **kwargs) if param.enabled else self.passthrough(x, **kwargs)
         return x
 
@@ -183,7 +182,10 @@ class SpecAugmentTransform(AugmentModule):
     def tmask(self, x, T):
         for idx in range(x.size(0)):
             t = random.randrange(0, T)
-            t0 = random.randrange(0, x.size(2) - t)
+            try:
+                t0 = random.randrange(0, x.size(2) - t)
+            except ValueError:
+                continue
             x[idx, :, t0:t0 + t] = 0
         return x
 

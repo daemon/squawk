@@ -13,6 +13,7 @@ from .dataclass import gather_dict
 @dataclass
 class Workspace(object):
     path: Path
+    best_quality: float = -10000.0
 
     def __post_init__(self):
         self.path.mkdir(parents=True, exist_ok=True)
@@ -30,6 +31,12 @@ class Workspace(object):
     def write_args(self, args):
         with open(self.path / 'cmd-args.json', 'w') as f:
             json.dump(gather_dict(args), f, indent=2)
+
+    def increment_model(self, model, quality):
+        if quality > self.best_quality:
+            self.save_model(model, best=True)
+            self.best_quality = quality
+        self.save_model(model, best=False)
 
     def save_model(self, model: nn.Module, best=False):
         torch.save(model.state_dict(), self.model_path(best=best))

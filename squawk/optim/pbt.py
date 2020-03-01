@@ -33,7 +33,7 @@ class PbaMetaOptimizer(object):
         self.weight_path = weight_path
         for x in augment_ops:
             if x.current_value_idx is None:
-                x.current_value_idx = random.choice(x.domain)
+                x.current_value_idx = random.choice(list(range(len(x.domain))))
         self.quality = quality
         self.step_no = step_no
         self.exploit_epochs = exploit_epochs
@@ -86,7 +86,7 @@ class PbaMetaOptimizer(object):
                     top25_opt = random.choice(list(filter(lambda opt: opt.quality >= q75, self.metadata.optimizers)))
                     self.augment_ops = top25_opt.augment_ops
                     self.quality = top25_opt.quality
-                    if load_callback: load_callback(torch.load(top25_opt.weight_path))
+                    if load_callback: load_callback(torch.load(top25_opt.weight_path, lambda s, l: s))
         self.explore()
 
     def explore(self):
@@ -110,12 +110,11 @@ class PbaMetaOptimizer(object):
         count = np.random.choice([0, 1, 2], p=[0.2, 0.3, 0.5])
         params = self.augment_ops
         random.shuffle(params)
-        for _, param in params:
+        for param in params:
             param.enabled = False
             if random.random() < param.prob and count > 0:
-                params.enabled = True
+                param.enabled = True
                 count -= 1
-        return params
 
     def __enter__(self, *args):
         pass
