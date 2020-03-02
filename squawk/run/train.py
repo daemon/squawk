@@ -73,6 +73,7 @@ def main():
     parser.add_argument('--use-all', action='store_true')
     parser.add_argument('--pba-init', type=str, choices=['random', 'default'], default='default')
     parser.add_argument('--seed-only', action='store_true')
+    parser.add_argument('--no-cleanup', action='store_false', dest='cleanup_pba')
     args = parser.parse_args()
 
     if args.use_all:
@@ -205,7 +206,7 @@ def main():
             pba_optimizer.step(results[args.target_metric], load_model)
         if epoch_idx == 9:
             optimizer = AdamW(params, args.lr / 3, weight_decay=args.weight_decay)
-    if args.use_pba:
+    if args.use_pba and args.cleanup_pba:
         pba_optimizer.cleanup()
     evaluate(test_loader, 'Test')
 
