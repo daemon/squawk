@@ -72,7 +72,21 @@ def main():
     parser.add_argument('--target-metric', '-tm', type=str, default='MAP@3')
     parser.add_argument('--use-all', action='store_true')
     parser.add_argument('--pba-init', type=str, choices=['random', 'default'], default='default')
+    parser.add_argument('--seed-only', action='store_true')
     args = parser.parse_args()
+
+    if args.use_all:
+        args.use_timeshift = True
+        args.use_timestretch = True
+        args.use_spec_augment = True
+        args.use_noise = True
+        args.use_vtlp = True
+    if args.seed_only:
+        args.use_spec_augment = False
+        args.use_timestretch = False
+        args.use_spec_augment = False
+        args.use_noise = False
+        args.use_vtlp = False
 
     device, gpu_device_ids = prepare_device(args.num_gpu)
     set_seed(args.seed)
@@ -82,9 +96,9 @@ def main():
     timestretch_transform = TimestretchTransform()
     noise_transform = NoiseTransform()
     train_compose = [deepcopy]
-    if args.use_timeshift or args.use_all:
+    if args.use_timeshift:
         train_compose.append(timeshift_transform)
-    if args.use_timestretch or args.use_all:
+    if args.use_timestretch:
         train_compose.append(timestretch_transform)
     train_compose.append(batchify)
     if len(train_compose) > 2:
@@ -168,7 +182,9 @@ def main():
             if args.use_pba:
                 pba_optimizer.sample()
             batch.to(device)
-            audio = noise_transform(batch.audio, lengths=batch.lengths)
+            audio = batch.audio
+            if args.use_noise:
+                audio = noise_transform(audio, lengths=batch.lengths)
             audio = spec_transform(audio, mels_only=True)
             audio = zmuv_transform(audio)
             if args.use_spec_augment:
