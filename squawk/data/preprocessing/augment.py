@@ -21,6 +21,11 @@ class AugmentationParameter(object):
     prob: float = 0.2
     enabled: bool = True
 
+    def copy_from(self, op):
+        self.current_value_idx = op.current_value_idx
+        self.prob = op.prob
+        self.enabled = op.enabled
+
     @property
     def magnitude(self):
         return self.domain[self.current_value_idx]

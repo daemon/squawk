@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Sequence, List
+from typing import Dict, Sequence, List
 import json
 import pathlib
 import os
@@ -72,6 +72,16 @@ class PbaMetaOptimizer(object):
             lock.lock()
             self.metadata = PbaMetadata.load(self.datafile_path, lock=lock)
 
+    def load_fence(self, lock):
+        self.save(lock=lock, inc_load_fence=True)
+        while self.metadata.load_fence < self.metadata.curr_count and self.metadata.load_fence != 0:
+            lock.unlock()
+            time.sleep(5)
+            lock.lock()
+            self.metadata = PbaMetadata.load(self.datafile_path, lock=lock)
+        if self.metadata.load_fence != 0:
+            self.save(lock=lock, clear_load_fence=True)
+
     def step(self, quality: float, load_callback=None):
         self.quality = quality
         self.step_no += 1
@@ -84,9 +94,10 @@ class PbaMetaOptimizer(object):
                 if self.quality <= np.quantile(opt_perfs, 0.25):
                     q75 = np.quantile(opt_perfs, 0.75)
                     top25_opt = random.choice(list(filter(lambda opt: opt.quality >= q75, self.metadata.optimizers)))
-                    self.augment_ops = top25_opt.augment_ops
+                    for op1, op2 in zip(self.augment_ops, top25_opt.augment_ops): op1.copy_from(op2)
                     self.quality = top25_opt.quality
                     if load_callback: load_callback(torch.load(top25_opt.weight_path, lambda s, l: s))
+                self.load_fence(lock)
         self.explore()
 
     def explore(self):
@@ -109,8 +120,8 @@ class PbaMetaOptimizer(object):
     def sample(self):
         count = np.random.choice([0, 1, 2], p=[0.2, 0.3, 0.5])
         params = self.augment_ops
-        random.shuffle(params)
-        for param in params:
+        for idx in np.random.permutation(list(range(len(params)))):
+            param = params[idx]
             param.enabled = False
             if random.random() < param.prob and count > 0:
                 param.enabled = True
@@ -128,7 +139,7 @@ class PbaMetaOptimizer(object):
             os.remove(str(self.datafile_path))
             os.remove(str(self.lock_file))
 
-    def save(self, lock=None, increment=False, decrement=False):
+    def save(self, lock=None, increment=False, decrement=False, inc_load_fence=False, clear_load_fence=False):
         with self.lock(grab=lock is None) as lock:
             try:
                 self.metadata = metadata = PbaMetadata.load(self.datafile_path, lock=lock)
@@ -141,6 +152,10 @@ class PbaMetaOptimizer(object):
                 inc = -1
             metadata.curr_count += inc
             metadata.last_id += inc
+            if inc_load_fence:
+                metadata.load_fence += 1
+            if clear_load_fence:
+                metadata.load_fence = 0
             idx = next((idx for idx, opt in enumerate(metadata.optimizers) if opt.id == self.id), None)
             if idx is None:
                 metadata.optimizers.append(self)
@@ -167,6 +182,7 @@ class PbaMetaOptimizer(object):
 class PbaMetadata(object):
     last_id: int = 0
     curr_count: int = 0
+    load_fence: int = 0
     optimizers: List[PbaMetaOptimizer] = field(default_factory=list)
 
     def dict(self):
