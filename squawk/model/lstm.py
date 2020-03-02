@@ -35,8 +35,8 @@ class LASEncoder(nn.Module):
         super().__init__()
         out_channels = config.num_latent_channels
         hidden_size = config.hidden_size
-        self.conv1 = conv1 = nn.Conv2d(config.num_spec_channels, stride=2, kernel_size=3, padding=1, out_channels=out_channels)
-        self.conv2 = conv2 = nn.Conv2d(out_channels, stride=2, kernel_size=3, padding=1, out_channels=out_channels)
+        self.conv1 = conv1 = nn.Conv2d(config.num_spec_channels, stride=2, kernel_size=3, padding=2, out_channels=out_channels)
+        self.conv2 = conv2 = nn.Conv2d(out_channels, stride=2, kernel_size=3, padding=2, out_channels=out_channels)
         self.conv_encoder = nn.Sequential(conv1,
                                           nn.BatchNorm2d(out_channels),
                                           nn.ReLU(),
@@ -45,15 +45,15 @@ class LASEncoder(nn.Module):
                                           nn.BatchNorm2d(out_channels),
                                           nn.ReLU(),
                                           nn.MaxPool2d((1, 2)))
-        self.lstm_encoder = nn.LSTM(out_channels * 20, hidden_size, config.num_layers, bias=True, bidirectional=True)
+        self.lstm_encoder = nn.LSTM(out_channels * 22, hidden_size, config.num_layers, bias=True, bidirectional=True)
 
     def forward(self, x, lengths):
         x = self.conv_encoder(x)
         x = x.permute(3, 0, 1, 2).contiguous()
         x = x.view(-1, x.size(1), x.size(2) * x.size(3))
-        lengths = ((lengths.float() - self.conv1.kernel_size[1] + 2) / 2 + 1).floor()
+        lengths = ((lengths.float() - self.conv1.kernel_size[1] + 4) / 2 + 1).floor()
         lengths = (lengths / 2).floor()
-        lengths = ((lengths.float() - self.conv2.kernel_size[1] + 2) / 2 + 1).floor()
+        lengths = ((lengths.float() - self.conv2.kernel_size[1] + 4) / 2 + 1).floor()
         lengths = (lengths / 2).floor()
         rnn_seq, (rnn_out, _) = self.lstm_encoder(pack_padded_sequence(x, lengths))
         return rnn_seq, rnn_out
