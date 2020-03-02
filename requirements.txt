@@ -7,3 +7,8 @@ tensorflow-addons
 librosa
 matplotlib
 torchvision
+aniso8601
+click
+itsdangerous
+jinja2
+markupsafe

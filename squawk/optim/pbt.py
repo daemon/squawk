@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Sequence, Mapping, List
+from typing import Dict, Sequence, List
 import json
 import pathlib
 import os
@@ -10,25 +10,14 @@ import numpy as np
 import torch
 
 from squawk.utils import FileLock
-
-
-@dataclass
-class AugmentationParameter(object):
-    domain: Sequence[float]
-    name: str
-    current_value_idx: int = None
-    prob: float = 0.2
-
-    @classmethod
-    def from_dict(cls, data_dict):
-        return cls(data_dict['domain'], data_dict['name'], data_dict['current_value_idx'], data_dict['prob'])
+from squawk.data import AugmentationParameter
 
 
 class PbaMetaOptimizer(object):
 
     def __init__(self,
                  weight_path: str,
-                 augment_map: Mapping[str, AugmentationParameter],
+                 augment_ops: Sequence[AugmentationParameter],
                  resample_prob=0.2,
                  index_amount_perturb=(0, 1, 2, 3),
                  datafile_path='.pba-meta.json',
@@ -38,13 +27,13 @@ class PbaMetaOptimizer(object):
                  exploit_epochs=3,
                  lock=None,
                  metadata=None):
-        self.augment_map = augment_map
+        self.augment_ops = augment_ops
         self.resample_prob = resample_prob
         self.index_amount_perturb = index_amount_perturb
         self.weight_path = weight_path
-        for v in augment_map.values():
-            if v.current_value_idx is None:
-                v.current_value_idx = random.choice(v.domain)
+        for x in augment_ops:
+            if x.current_value_idx is None:
+                x.current_value_idx = random.choice(list(range(len(x.domain))))
         self.quality = quality
         self.step_no = step_no
         self.exploit_epochs = exploit_epochs
@@ -74,14 +63,24 @@ class PbaMetaOptimizer(object):
                     exploit_epochs=self.exploit_epochs,
                     weight_path=self.weight_path,
                     id=self.id,
-                    augment_map={k: v.__dict__ for k, v in self.augment_map.items()})
+                    augment_ops=[x.__dict__ for x in self.augment_ops])
 
     def fence(self, lock):
-        while all(opt.step_no > self.step_no for opt in self.metadata.optimizers):
+        while any(opt.step_no < self.step_no for opt in self.metadata.optimizers):
             lock.unlock()
             time.sleep(5)
             lock.lock()
             self.metadata = PbaMetadata.load(self.datafile_path, lock=lock)
+
+    def load_fence(self, lock):
+        self.save(lock=lock, inc_load_fence=True)
+        while self.metadata.load_fence < self.metadata.curr_count and self.metadata.load_fence != 0:
+            lock.unlock()
+            time.sleep(5)
+            lock.lock()
+            self.metadata = PbaMetadata.load(self.datafile_path, lock=lock)
+        if self.metadata.load_fence != 0:
+            self.save(lock=lock, clear_load_fence=True)
 
     def step(self, quality: float, load_callback=None):
         self.quality = quality
@@ -95,13 +94,14 @@ class PbaMetaOptimizer(object):
                 if self.quality <= np.quantile(opt_perfs, 0.25):
                     q75 = np.quantile(opt_perfs, 0.75)
                     top25_opt = random.choice(list(filter(lambda opt: opt.quality >= q75, self.metadata.optimizers)))
-                    self.augment_map = top25_opt.augment_map
+                    for op1, op2 in zip(self.augment_ops, top25_opt.augment_ops): op1.copy_from(op2)
                     self.quality = top25_opt.quality
-                    if load_callback: load_callback(torch.load(top25_opt.weight_path))
+                    if load_callback: load_callback(torch.load(top25_opt.weight_path, lambda s, l: s))
+                self.load_fence(lock)
         self.explore()
 
     def explore(self):
-        for param in self.augment_map.values():
+        for param in self.augment_ops:
             if random.random() < 0.2:
                 param.current_value_idx = random.choice(list(range(len(param.domain))))
             else:
@@ -118,17 +118,14 @@ class PbaMetaOptimizer(object):
                 param.prob = max(min(param.prob, 1), 0)
 
     def sample(self):
-        count = np.random.choice([0, 1, 2, 3, 4, 5], p=[0.05, 0.05, 0.1, 0.2, 0.2, 0.4])
-        params = list(self.augment_map.items())
-        random.shuffle(params)
-        sampled_params = []
-        for _, param in params:
-            if count == 0:
-                break
-            if random.random() < param.prob:
-                sampled_params.append(param)
+        count = np.random.choice([0, 1, 2], p=[0.2, 0.3, 0.5])
+        params = self.augment_ops
+        for idx in np.random.permutation(list(range(len(params)))):
+            param = params[idx]
+            param.enabled = False
+            if random.random() < param.prob and count > 0:
+                param.enabled = True
                 count -= 1
-        return sampled_params
 
     def __enter__(self, *args):
         pass
@@ -142,7 +139,7 @@ class PbaMetaOptimizer(object):
             os.remove(str(self.datafile_path))
             os.remove(str(self.lock_file))
 
-    def save(self, lock=None, increment=False, decrement=False):
+    def save(self, lock=None, increment=False, decrement=False, inc_load_fence=False, clear_load_fence=False):
         with self.lock(grab=lock is None) as lock:
             try:
                 self.metadata = metadata = PbaMetadata.load(self.datafile_path, lock=lock)
@@ -155,6 +152,10 @@ class PbaMetaOptimizer(object):
                 inc = -1
             metadata.curr_count += inc
             metadata.last_id += inc
+            if inc_load_fence:
+                metadata.load_fence += 1
+            if clear_load_fence:
+                metadata.load_fence = 0
             idx = next((idx for idx, opt in enumerate(metadata.optimizers) if opt.id == self.id), None)
             if idx is None:
                 metadata.optimizers.append(self)
@@ -165,7 +166,7 @@ class PbaMetaOptimizer(object):
     @classmethod
     def from_dict(cls, data_dict, lock=None, metadata=None):
         return cls(data_dict['weight_path'],
-                   {k: AugmentationParameter.from_dict(v) for k, v in data_dict['augment_map'].items()},
+                   [AugmentationParameter.from_dict(x) for x in data_dict['augment_ops']],
                    resample_prob=data_dict['resample_prob'],
                    quality=data_dict['quality'],
                    step_no=data_dict['step_no'],
@@ -181,6 +182,7 @@ class PbaMetaOptimizer(object):
 class PbaMetadata(object):
     last_id: int = 0
     curr_count: int = 0
+    load_fence: int = 0
     optimizers: List[PbaMetaOptimizer] = field(default_factory=list)
 
     def dict(self):
