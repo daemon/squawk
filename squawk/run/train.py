@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.utils.data as tud
 
 from squawk.data import load_freesounds, batchify, StandardAudioTransform, ZmuvTransform, SpecAugmentTransform,\
-    find_metric, TimeshiftTransform, compose, TimestretchTransform, NoiseTransform
+    find_metric, TimeshiftTransform, compose, TimestretchTransform, NoiseTransform, load_gsc
 from squawk.model import LASClassifier, LASClassifierConfig, MobileNetClassifier, MNClassifierConfig
 from squawk.optim import PbaMetaOptimizer
 from squawk.utils import prettify_dataclass, Workspace, set_seed, prepare_device
@@ -74,6 +74,10 @@ def main():
     parser.add_argument('--pba-init', type=str, choices=['random', 'default'], default='default')
     parser.add_argument('--seed-only', action='store_true')
     parser.add_argument('--no-cleanup', action='store_false', dest='cleanup_pba')
+    parser.add_argument('--las-size', type=str, choices=['small', 'medium', 'large'], default='large')
+    parser.add_argument('--dataset', '-d', type=str, default='fsd', choices=['fsd', 'gsc'])
+    parser.add_argument('--num-workers', type=int, default=16)
+    parser.add_argument('--no-reduce-dim', action='store_false', dest='reduce_dim')
     args = parser.parse_args()
 
     if args.use_all:
@@ -92,7 +96,10 @@ def main():
     device, gpu_device_ids = prepare_device(args.num_gpu)
     set_seed(args.seed)
 
-    train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir), lru_maxsize=args.lru_maxsize)
+    if args.dataset == 'fsd':
+        train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir), lru_maxsize=args.lru_maxsize)
+    elif args.dataset == 'gsc':
+        train_ds, dev_ds, test_ds = load_gsc(Path(args.dir), lru_maxsize=args.lru_maxsize)
     timeshift_transform = TimeshiftTransform(sr=train_ds.info.sample_rate)
     timestretch_transform = TimestretchTransform()
     noise_transform = NoiseTransform()
@@ -106,14 +113,15 @@ def main():
         train_collate = compose(*train_compose)
     else:
         train_collate = batchify
-    train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=train_collate, num_workers=16, drop_last=True)
-    dev_loader = tud.DataLoader(dev_ds, batch_size=16, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=16)
-    test_loader = tud.DataLoader(test_ds, batch_size=16, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=16)
+    train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=train_collate, num_workers=args.num_workers, drop_last=True)
+    dev_loader = tud.DataLoader(dev_ds, batch_size=args.batch_size, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=args.num_workers)
+    test_loader = tud.DataLoader(test_ds, batch_size=args.batch_size, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=args.num_workers)
     spec_transform = StandardAudioTransform()
     spec_transform.cuda()
 
     if args.model == 'las':
-        config = LASClassifierConfig(train_ds.info.num_labels)
+        kwargs = dict() if args.reduce_dim else dict(use_stride=False, use_maxpool=False)
+        config = LASClassifierConfig.make(train_ds.info.num_labels, args.las_size, **kwargs)
         model = LASClassifier(config)
     else:
         config = MNClassifierConfig(train_ds.info.num_labels)
@@ -206,6 +214,8 @@ def main():
             pba_optimizer.step(results[args.target_metric], load_model)
         if epoch_idx == 9:
             optimizer = AdamW(params, args.lr / 3, weight_decay=args.weight_decay)
+        if epoch_idx == 14 and args.model == 'las':
+            optimizer = AdamW(params, args.lr / 9, weight_decay=args.weight_decay)
     if args.use_pba and args.cleanup_pba:
         pba_optimizer.cleanup()
     evaluate(test_loader, 'Test')
