@@ -79,6 +79,7 @@ def main():
     parser.add_argument('--num-workers', type=int, default=16)
     parser.add_argument('--no-reduce-dim', action='store_false', dest='reduce_dim')
     parser.add_argument('--exploit-epochs', type=int, default=3)
+    parser.add_argument('--no-pba-explore', action='store_false', dest='pba_explore')
     args = parser.parse_args()
 
     if args.use_all:
@@ -212,7 +213,7 @@ def main():
 
         results = evaluate(dev_loader, 'Dev')
         if args.use_pba:
-            pba_optimizer.step(results[args.target_metric], load_model)
+            pba_optimizer.step(results[args.target_metric], load_model, explore=args.pba_explore)
         if epoch_idx == 9:
             optimizer = AdamW(params, args.lr / 3, weight_decay=args.weight_decay)
         if epoch_idx == 14 and args.model == 'las':
