@@ -78,6 +78,7 @@ def main():
     parser.add_argument('--dataset', '-d', type=str, default='fsd', choices=['fsd', 'gsc'])
     parser.add_argument('--num-workers', type=int, default=16)
     parser.add_argument('--no-reduce-dim', action='store_false', dest='reduce_dim')
+    parser.add_argument('--exploit-epochs', type=int, default=3)
     args = parser.parse_args()
 
     if args.use_all:
@@ -150,7 +151,7 @@ def main():
                 param.current_value_idx = None
     if args.use_pba:
         augment_params = list(chain(*[mod.augment_params for mod in augment_modules]))
-        pba_optimizer = PbaMetaOptimizer(ws.model_path(), augment_params)
+        pba_optimizer = PbaMetaOptimizer(ws.model_path(), augment_params, exploit_epochs=args.exploit_epochs)
 
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
