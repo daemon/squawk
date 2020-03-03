@@ -188,11 +188,12 @@ class PbaMetadata(object):
     def dict(self):
         return dict(last_id=self.last_id,
                     curr_count=self.curr_count,
+                    load_fence=self.load_fence,
                     optimizers=[x.dict() for x in self.optimizers])
 
     @classmethod
     def from_dict(cls, data_dict, lock=None):
-        metadata = cls(data_dict['last_id'], data_dict['curr_count'])
+        metadata = cls(data_dict['last_id'], data_dict['curr_count'], data_dict['load_fence'])
         metadata.optimizers = [PbaMetaOptimizer.from_dict(v, lock=lock, metadata=metadata) for v in data_dict['optimizers']]
         return metadata
 
