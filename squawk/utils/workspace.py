@@ -14,11 +14,13 @@ from .dataclass import gather_dict
 class Workspace(object):
     path: Path
     best_quality: float = -10000.0
+    delete_existing: bool = True
 
     def __post_init__(self):
         self.path.mkdir(parents=True, exist_ok=True)
         log_path = self.path / 'logs'
-        shutil.rmtree(str(log_path), ignore_errors=True)
+        if self.delete_existing:
+            shutil.rmtree(str(log_path), ignore_errors=True)
         self.summary_writer = SummaryWriter(str(log_path))
 
     def model_path(self, best=False):

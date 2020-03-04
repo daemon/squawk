@@ -18,10 +18,12 @@ from squawk.utils import prettify_dataclass, Workspace, set_seed, prepare_device
 
 
 def main():
-    def evaluate(data_loader, prefix: str):
+    def evaluate(data_loader, prefix: str, print_confusion_matrix=False):
         model.eval()
         spec_transform.eval()
         pbar = tqdm(data_loader, total=len(data_loader), position=1, desc=prefix, leave=True)
+        if print_confusion_matrix:
+            confusion_matrix = np.zeros((train_ds.info.num_labels, train_ds.info.num_labels))
         for tracker in trackers:
             tracker.reset()
         for batch in pbar:
@@ -32,6 +34,9 @@ def main():
             audio = spec_transform(zmuv_transform(spec_transform(batch.audio, mels_only=True)), deltas_only=True)
             with torch.no_grad():
                 scores = model(audio, lengths)
+            if print_confusion_matrix:
+                for score, label in zip(scores.max(1)[1].tolist(), batch.labels.tolist()):
+                    confusion_matrix[score, label] += 1
             for tracker in trackers:
                 tracker.update(scores, batch.labels)
         results = {}
@@ -39,6 +44,9 @@ def main():
             writer.add_scalar(f'{prefix}/Loss/{tracker.name}', tracker.value, epoch_idx)
             results[tracker.name] = tracker.value
             tqdm.write(f'{epoch_idx + 1},{tracker.name},{tracker.value:.4f}')
+        if print_confusion_matrix:
+            print(train_ds.info.label_map)
+            print(confusion_matrix)
         if args.use_pba:
             with pba_optimizer.lock():
                 ws.increment_model(model, results[args.target_metric])
@@ -80,6 +88,8 @@ def main():
     parser.add_argument('--no-reduce-dim', action='store_false', dest='reduce_dim')
     parser.add_argument('--exploit-epochs', type=int, default=3)
     parser.add_argument('--no-pba-explore', action='store_false', dest='pba_explore')
+    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--print-confusion-matrix', action='store_true')
     args = parser.parse_args()
 
     if args.use_all:
@@ -131,7 +141,7 @@ def main():
     tqdm.write(prettify_dataclass(args))
     tqdm.write(prettify_dataclass(config))
 
-    ws = Workspace(Path(args.workspace))
+    ws = Workspace(Path(args.workspace), delete_existing=not args.eval)
     ws.write_config(config)
     ws.write_args(args)
     writer = ws.summary_writer
@@ -184,6 +194,11 @@ def main():
         zmuv_transform.update(audio, mask=mask)
     timeshift_transform.train()
     timestretch_transform.train()
+
+    if args.eval:
+        ws.load_model(model, best=False)
+        evaluate(test_loader, 'Test', print_confusion_matrix=args.print_confusion_matrix)
+        return
 
     for epoch_idx in trange(args.num_epochs, position=0, leave=True):
         model.train()
