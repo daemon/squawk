@@ -122,7 +122,7 @@ def main():
     train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=train_collate, num_workers=16, drop_last=True)
     dev_loader = tud.DataLoader(dev_ds, batch_size=16, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=16)
     test_loader = tud.DataLoader(test_ds, batch_size=16, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=16)
-    spec_transform = StandardAudioTransform()
+    spec_transform = StandardAudioTransform(train_ds.info.sample_rate, int(400 / 16000 * train_ds.info.sample_rate))
     spec_transform.to(device)
 
     # use args.model if necessary
