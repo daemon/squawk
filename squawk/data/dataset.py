@@ -102,6 +102,36 @@ class ClassificationDataset(tud.Dataset):
         return ClassificationExample(self.lru_cache[idx], self.label_data[idx])
 
 
+def load_gsc(folder: Path, lru_maxsize=np.inf):
+    def load_split(name):
+        dev_path = folder / 'validation_list.txt'
+        test_path = folder / 'testing_list.txt'
+        labels = []
+        for x in folder.glob('*'):
+            if x.is_dir():
+                labels.append(x.name)
+        labels = sorted(labels)
+        l2idx = {x: idx for idx, x in enumerate(labels)}
+        with open(dev_path) as f:
+            dev_set = list(map(str.strip, f.readlines()))
+        with open(test_path) as f:
+            test_set = list(map(str.strip, f.readlines()))
+        if name == 'dev':
+            tgt_set = dev_set
+        elif name == 'test':
+            tgt_set = test_set
+        else:
+            all_set = set(f'{str(x.parent.name)}/{str(x.name)}' for x in folder.glob('*/*.wav'))
+            dev_set = set(dev_set)
+            test_set = set(test_set)
+            tgt_set = (all_set - dev_set) - test_set
+        return ClassificationDataset([f'{str(folder)}/{x}' for x in tgt_set],
+                                     [l2idx[x.split('/')[0]] for x in tgt_set],
+                                     DatasetInfo('GSC', 16000, l2idx),
+                                     LruCache(lru_maxsize))
+    return load_split('training'), load_split('dev'), load_split('test')
+
+
 def load_freesounds(folder: Path, lru_maxsize=np.inf):
     def load_split(name):
         train_csv_path = folder / 'FSDKaggle2018.meta' / f'train_post_competition.csv'

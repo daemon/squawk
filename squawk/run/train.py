@@ -11,17 +11,19 @@ import torch.nn as nn
 import torch.utils.data as tud
 
 from squawk.data import load_freesounds, batchify, StandardAudioTransform, ZmuvTransform, SpecAugmentTransform,\
-    find_metric, TimeshiftTransform, compose, TimestretchTransform, NoiseTransform
+    find_metric, TimeshiftTransform, compose, TimestretchTransform, NoiseTransform, load_gsc
 from squawk.model import LASClassifier, LASClassifierConfig, MobileNetClassifier, MNClassifierConfig
 from squawk.optim import PbaMetaOptimizer
 from squawk.utils import prettify_dataclass, Workspace, set_seed, prepare_device
 
 
 def main():
-    def evaluate(data_loader, prefix: str):
+    def evaluate(data_loader, prefix: str, print_confusion_matrix=False):
         model.eval()
         spec_transform.eval()
         pbar = tqdm(data_loader, total=len(data_loader), position=1, desc=prefix, leave=True)
+        if print_confusion_matrix:
+            confusion_matrix = np.zeros((train_ds.info.num_labels, train_ds.info.num_labels))
         for tracker in trackers:
             tracker.reset()
         for batch in pbar:
@@ -32,6 +34,9 @@ def main():
             audio = spec_transform(zmuv_transform(spec_transform(batch.audio, mels_only=True)), deltas_only=True)
             with torch.no_grad():
                 scores = model(audio, lengths)
+            if print_confusion_matrix:
+                for score, label in zip(scores.max(1)[1].tolist(), batch.labels.tolist()):
+                    confusion_matrix[score, label] += 1
             for tracker in trackers:
                 tracker.update(scores, batch.labels)
         results = {}
@@ -39,6 +44,9 @@ def main():
             writer.add_scalar(f'{prefix}/Loss/{tracker.name}', tracker.value, epoch_idx)
             results[tracker.name] = tracker.value
             tqdm.write(f'{epoch_idx + 1},{tracker.name},{tracker.value:.4f}')
+        if print_confusion_matrix:
+            print(train_ds.info.label_map)
+            print(confusion_matrix)
         if args.use_pba:
             with pba_optimizer.lock():
                 ws.increment_model(model, results[args.target_metric])
@@ -74,6 +82,14 @@ def main():
     parser.add_argument('--pba-init', type=str, choices=['random', 'default'], default='default')
     parser.add_argument('--seed-only', action='store_true')
     parser.add_argument('--no-cleanup', action='store_false', dest='cleanup_pba')
+    parser.add_argument('--las-size', type=str, choices=['small', 'medium', 'large'], default='large')
+    parser.add_argument('--dataset', '-d', type=str, default='fsd', choices=['fsd', 'gsc'])
+    parser.add_argument('--num-workers', type=int, default=16)
+    parser.add_argument('--no-reduce-dim', action='store_false', dest='reduce_dim')
+    parser.add_argument('--exploit-epochs', type=int, default=3)
+    parser.add_argument('--no-pba-explore', action='store_false', dest='pba_explore')
+    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--print-confusion-matrix', action='store_true')
     args = parser.parse_args()
 
     if args.use_all:
@@ -92,7 +108,10 @@ def main():
     device, gpu_device_ids = prepare_device(args.num_gpu)
     set_seed(args.seed)
 
-    train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir), lru_maxsize=args.lru_maxsize)
+    if args.dataset == 'fsd':
+        train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir), lru_maxsize=args.lru_maxsize)
+    elif args.dataset == 'gsc':
+        train_ds, dev_ds, test_ds = load_gsc(Path(args.dir), lru_maxsize=args.lru_maxsize)
     timeshift_transform = TimeshiftTransform(sr=train_ds.info.sample_rate)
     timestretch_transform = TimestretchTransform()
     noise_transform = NoiseTransform()
@@ -106,14 +125,15 @@ def main():
         train_collate = compose(*train_compose)
     else:
         train_collate = batchify
-    train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=train_collate, num_workers=16, drop_last=True)
-    dev_loader = tud.DataLoader(dev_ds, batch_size=16, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=16)
-    test_loader = tud.DataLoader(test_ds, batch_size=16, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=16)
+    train_loader = tud.DataLoader(train_ds, batch_size=args.batch_size, pin_memory=True, shuffle=True, collate_fn=train_collate, num_workers=args.num_workers, drop_last=True)
+    dev_loader = tud.DataLoader(dev_ds, batch_size=args.batch_size, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=args.num_workers)
+    test_loader = tud.DataLoader(test_ds, batch_size=args.batch_size, pin_memory=True, shuffle=False, collate_fn=batchify, num_workers=args.num_workers)
     spec_transform = StandardAudioTransform()
     spec_transform.cuda()
 
     if args.model == 'las':
-        config = LASClassifierConfig(train_ds.info.num_labels)
+        kwargs = dict() if args.reduce_dim else dict(use_stride=False, use_maxpool=False)
+        config = LASClassifierConfig.make(train_ds.info.num_labels, args.las_size, **kwargs)
         model = LASClassifier(config)
     else:
         config = MNClassifierConfig(train_ds.info.num_labels)
@@ -121,7 +141,7 @@ def main():
     tqdm.write(prettify_dataclass(args))
     tqdm.write(prettify_dataclass(config))
 
-    ws = Workspace(Path(args.workspace))
+    ws = Workspace(Path(args.workspace), delete_existing=not args.eval)
     ws.write_config(config)
     ws.write_args(args)
     writer = ws.summary_writer
@@ -142,7 +162,7 @@ def main():
                 param.current_value_idx = None
     if args.use_pba:
         augment_params = list(chain(*[mod.augment_params for mod in augment_modules]))
-        pba_optimizer = PbaMetaOptimizer(ws.model_path(), augment_params)
+        pba_optimizer = PbaMetaOptimizer(ws.model_path(), augment_params, exploit_epochs=args.exploit_epochs)
 
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -175,6 +195,11 @@ def main():
     timeshift_transform.train()
     timestretch_transform.train()
 
+    if args.eval:
+        ws.load_model(model, best=False)
+        evaluate(test_loader, 'Test', print_confusion_matrix=args.print_confusion_matrix)
+        return
+
     for epoch_idx in trange(args.num_epochs, position=0, leave=True):
         model.train()
         if args.use_vtlp: spec_transform.train()
@@ -203,9 +228,11 @@ def main():
 
         results = evaluate(dev_loader, 'Dev')
         if args.use_pba:
-            pba_optimizer.step(results[args.target_metric], load_model)
+            pba_optimizer.step(results[args.target_metric], load_model, explore=args.pba_explore)
         if epoch_idx == 9:
             optimizer = AdamW(params, args.lr / 3, weight_decay=args.weight_decay)
+        if epoch_idx == 14 and args.model == 'las':
+            optimizer = AdamW(params, args.lr / 9, weight_decay=args.weight_decay)
     if args.use_pba and args.cleanup_pba:
         pba_optimizer.cleanup()
     evaluate(test_loader, 'Test')

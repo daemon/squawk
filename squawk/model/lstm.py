@@ -12,6 +12,8 @@ class LASEncoderConfig(object):
     num_latent_channels: int = 96
     hidden_size: int = 256
     num_layers: int = 1
+    use_maxpool: bool = True
+    use_stride: bool = True
 
 
 @dataclass
@@ -28,6 +30,13 @@ class LASClassifierConfig(object):
     las_config: LASEncoderConfig = field(default_factory=LASEncoderConfig)
     fixed_attn_config: FixedAttentionModuleConfig = field(default_factory=FixedAttentionModuleConfig)
 
+    @classmethod
+    def make(cls, num_labels, size='large', **kwargs):
+        if size == 'large':
+            return cls(num_labels, **kwargs)
+        elif size == 'small':
+            return cls(num_labels, 128, 0.1, LASEncoderConfig(3, 3, 64, **kwargs), FixedAttentionModuleConfig(1, 64))
+
 
 class LASEncoder(nn.Module):
 
@@ -35,26 +44,30 @@ class LASEncoder(nn.Module):
         super().__init__()
         out_channels = config.num_latent_channels
         hidden_size = config.hidden_size
-        self.conv1 = conv1 = nn.Conv2d(config.num_spec_channels, stride=2, kernel_size=3, padding=2, out_channels=out_channels)
-        self.conv2 = conv2 = nn.Conv2d(out_channels, stride=2, kernel_size=3, padding=2, out_channels=out_channels)
+        self.use_maxpool = config.use_maxpool
+        self.use_stride = config.use_stride
+        self.conv1 = conv1 = nn.Conv2d(config.num_spec_channels, stride=1, kernel_size=3, padding=2, out_channels=out_channels)
+        self.conv2 = conv2 = nn.Conv2d(out_channels, stride=1, kernel_size=3, padding=2, out_channels=out_channels)
         self.conv_encoder = nn.Sequential(conv1,
                                           nn.BatchNorm2d(out_channels),
                                           nn.ReLU(),
-                                          nn.MaxPool2d((1, 2)),
+                                          nn.MaxPool2d((1, 2 if config.use_maxpool else 1)),
                                           conv2,
                                           nn.BatchNorm2d(out_channels),
                                           nn.ReLU(),
-                                          nn.MaxPool2d((1, 2)))
-        self.lstm_encoder = nn.LSTM(out_channels * 22, hidden_size, config.num_layers, bias=True, bidirectional=True)
+                                          nn.MaxPool2d((1, 2 if config.use_maxpool else 1)))
+        self.lstm_encoder = nn.LSTM(out_channels * (22 if self.use_stride else 84), hidden_size, config.num_layers, bias=True, bidirectional=True)
 
     def forward(self, x, lengths):
         x = self.conv_encoder(x)
         x = x.permute(3, 0, 1, 2).contiguous()
         x = x.view(-1, x.size(1), x.size(2) * x.size(3))
-        lengths = ((lengths.float() - self.conv1.kernel_size[1] + 4) / 2 + 1).floor()
-        lengths = (lengths / 2).floor()
-        lengths = ((lengths.float() - self.conv2.kernel_size[1] + 4) / 2 + 1).floor()
-        lengths = (lengths / 2).floor()
+        lengths = ((lengths.float() - self.conv1.kernel_size[1] + 4) / self.conv1.stride[1] + 1).floor()
+        if self.use_maxpool:
+            lengths = (lengths / 2).floor()
+        lengths = ((lengths.float() - self.conv2.kernel_size[1] + 4) / self.conv2.stride[1] + 1).floor()
+        if self.use_maxpool:
+            lengths = (lengths / 2).floor()
         rnn_seq, (rnn_out, _) = self.lstm_encoder(pack_padded_sequence(x, lengths))
         return rnn_seq, rnn_out
 

@@ -82,7 +82,7 @@ class PbaMetaOptimizer(object):
         if self.metadata.load_fence != 0:
             self.save(lock=lock, clear_load_fence=True)
 
-    def step(self, quality: float, load_callback=None):
+    def step(self, quality: float, load_callback=None, explore=True):
         self.quality = quality
         self.step_no += 1
         self.save()
@@ -98,7 +98,8 @@ class PbaMetaOptimizer(object):
                     self.quality = top25_opt.quality
                     if load_callback: load_callback(torch.load(top25_opt.weight_path, lambda s, l: s))
                 self.load_fence(lock)
-        self.explore()
+        if explore:
+            self.explore()
 
     def explore(self):
         for param in self.augment_ops:
