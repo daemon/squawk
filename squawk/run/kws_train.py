@@ -2,6 +2,7 @@ from copy import deepcopy
 from itertools import chain
 from pathlib import Path
 import argparse
+import json
 
 from tqdm import trange, tqdm
 from torch.optim.adamw import AdamW
@@ -10,9 +11,9 @@ import torch
 import torch.nn as nn
 import torch.utils.data as tud
 
-from squawk.data import load_freesounds, batchify, StandardAudioTransform, ZmuvTransform, SpecAugmentTransform,\
+from squawk.data import load_gsc, batchify, StandardAudioTransform, ZmuvTransform, SpecAugmentTransform,\
     find_metric, TimeshiftTransform, compose, TimestretchTransform, NoiseTransform
-from squawk.model import LASClassifier, LASClassifierConfig, MobileNetClassifier, MNClassifierConfig
+from squawk.model import ResNet, ResNetConfig
 from squawk.optim import PbaMetaOptimizer
 from squawk.utils import prettify_dataclass, Workspace, set_seed, prepare_device
 
@@ -60,7 +61,7 @@ def main():
     parser.add_argument('--workspace', '-w', type=str, default=str(Path('workspaces') / 'default'))
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--model', type=str, default='las', choices=['las', 'mn'])
+    # parser.add_argument('--model', type=str, default='las', choices=['las', 'mn'])
     parser.add_argument('--no-timewarp', '-notw', action='store_false', dest='use_timewarp')
     parser.add_argument('--use-timeshift', '-ts', action='store_true')
     parser.add_argument('--use-vtlp', '-vtlp', action='store_true')
@@ -92,7 +93,19 @@ def main():
     device, gpu_device_ids = prepare_device(args.num_gpu)
     set_seed(args.seed)
 
-    train_ds, dev_ds, test_ds = load_freesounds(Path(args.dir), lru_maxsize=args.lru_maxsize)
+    data_config = {
+        "data_dir": args.dir,
+        "sample_rate": 16000,
+        "group_speakers_by_id": True,
+        "dev_pct": 0.1,
+        "test_pct": 0.1,
+        "noise_pct": 0.1,
+        "target_class": ["yes", "no", "up", "down", "left", "right", "on", "off", "stop", "go"],
+        "unknown_class": False,
+        "silence_class": False
+    }
+
+    train_ds, dev_ds, test_ds = load_gsc(data_config, lru_maxsize=args.lru_maxsize)
     timeshift_transform = TimeshiftTransform(sr=train_ds.info.sample_rate)
     timestretch_transform = TimestretchTransform()
     noise_transform = NoiseTransform()
@@ -112,17 +125,15 @@ def main():
     spec_transform = StandardAudioTransform()
     spec_transform.to(device)
 
-    if args.model == 'las':
-        config = LASClassifierConfig(train_ds.info.num_labels)
-        model = LASClassifier(config)
-    else:
-        config = MNClassifierConfig(train_ds.info.num_labels)
-        model = MobileNetClassifier(config)
+    # use args.model if necessary
+    model_config = ResNetConfig(len(data_config["target_class"]))
+    model = ResNet(model_config)
+
     tqdm.write(prettify_dataclass(args))
-    tqdm.write(prettify_dataclass(config))
+    tqdm.write(prettify_dataclass(model_config))
 
     ws = Workspace(Path(args.workspace))
-    ws.write_config(config)
+    ws.write_config(model_config)
     ws.write_args(args)
     writer = ws.summary_writer
 
